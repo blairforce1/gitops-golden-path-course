@@ -120,7 +120,7 @@ The dev/prod kind clusters are **stand-ins with a planned retirement**: Act VIII
 
 **The subscription wall, and the bill.** Stages 31–32 still run on kind: the subscription pays for identities, a storage account and a Key Vault. Pennies. The clusters that cost real money arrive in Act VIII, and the course treats them as **throwaway**: created for a working session, deleted at its end, rebuilt from git the next time. The same rebuild discipline every act has drilled, now with a bill attached, and the create/delete steps spelled out beside every use. The AKS shape is deliberately the cheapest that works; this is **not** a lesson in Azure infrastructure practice: basic AKS, for illustration only.
 
-| Stage | Covers |
+| Stage | Covers (not yet written) |
 |---|---|
 | 30 - Policy & supply chain | keyless cosign signing from the app repo's CI (GitHub OIDC - the first federation you see), syft SBOMs as signed attestations, Kyverno `verifyImages`, Flux `OCIRepository.spec.verify`, the stage-08 baseline re-enforced at admission (validate, never mutate), `PolicyException` with mandatory expiry, the CVE drill; the substitution boundary named plainly - `postBuild` runs *after* `verify`, so applied bytes are not signed bytes, and stage 09's allowlist ("named cluster facts, nothing else") is what keeps that gap small enough to sign; stage 09's reason vocabulary gains `VerificationError` and the admission denial |
 | 31 - Workload identity on kind | the federation handshake hand-assembled: pinned SA signing keys, OIDC discovery + JWKS on a public blob, the apiserver issuer pointed at it, real Entra credentials federated against it; ESO swaps to Key Vault on the same manifests; the app swaps Azurite's connection string for token auth; the github-status-token becomes an ExternalSecret |
@@ -133,7 +133,7 @@ The dev/prod kind clusters are **stand-ins with a planned retirement**: Act VIII
 
 Act VIII looks like the final boss. The whole course exists so that it isn't: each stage is a small, readable diff replacing a layer you already understand.
 
-| Stage | Covers |
+| Stage | Covers (not yet written) |
 |---|---|
 | 33 - The cluster arrives | AKS via Bicep, Actions with OIDC; AKS joins the fleet by binding-move PR and the kind dev/prod clusters retire - Act II's promise, paid |
 | 34 - The platform absorbed | the managed Flux extension replaces stage 03's bootstrap; ACR and managed image integrity replace stage 30's Kyverno |
@@ -142,7 +142,7 @@ Act VIII looks like the final boss. The whole course exists so that it isn't: ea
 
 ## Flux, not Argo CD
 
-One reconciler, chosen once ([decision 0001](seed/decisions/0001-flux-not-argo-cd.md)). Flux, because everything it does is a CR in git and nothing else: no UI to become the operating surface, no RBAC model of its own, and an event model the whole evidence chain (commit statuses, alerts, the change record) is built on. The original tie-breaker was Azure's managed GitOps offering being Flux-only, so a hand-built platform is absorbed by the `microsoft.flux` extension in Act VIII with a small, readable diff. That half of the argument is now history: since 2026 Azure also offers Argo CD as a managed extension (`Microsoft.ArgoCD`, in preview, with workload identity and Entra SSO). Argo CD is a legitimate choice for a team today, and this course would still teach the same platform. What transfers unchanged: the repo layout, the PR discipline, the rungs, the identifiers, the gates and the evidence - none of it is reconciler-specific. What changes: the reconciler's own CRs (stamps become `Application`s), the notification loop, and the absorption stage. Argo CD is described here once and never runs.
+One reconciler, chosen once ([decision 0001](seed/decisions/0001-flux-not-argo-cd.md)). Flux, because everything it does is a CR in git and nothing else: no UI to become the operating surface, no RBAC model of its own, and an event model the whole evidence chain (commit statuses, alerts, the change record) is built on. The original tie-breaker was Azure's managed GitOps offering being Flux-only, so a hand-built platform is absorbed by the `microsoft.flux` extension in Act VIII with a small, readable diff. That half of the argument is now history: since 2026 Azure also offers Argo CD as a managed extension (`Microsoft.ArgoCD`, in preview, with workload identity and Entra SSO). Argo CD is a legitimate choice for a team today, and this course would still teach the same platform. What transfers unchanged: the repo layout, the PR discipline, the rungs, the identifiers, the gates and the evidence - none of it is reconciler-specific. What changes: the reconciler's own CRs (stamps become an `Application`), the notification loop, and the absorption stage. Argo CD is described here once and never runs.
 
 ## Side quests
 
@@ -150,7 +150,7 @@ Everything the platform needs to be *operated* is a trunk stage, because "option
 
 Seven are queued; none are written yet. A quest's work item is raised **on demand**, never seeded: `tools/start-quest <quest> <owner>/<repo>`, run from the course checkout when you begin one, creates the issue with whatever number is next in your repo, which is why the text never cites quest numbers. The drills arrive shaped as the incident they simulate: the breach rotation and break-glass drills open as **sev0 bugs** against the platform, and every PR a drill produces cites its incident until you close it by hand with the evidence in.
 
-| Quest | Unlocks after | Covers |
+| Quest | Unlocks after | Covers (not yet written) |
 |---|---|---|
 | Migrate a base change | Act IV | Run with the `promote` skill. The expand/contract lifecycle for config, end to end: a base change enters as an overlay patch on one rung, promotes rung by rung with soak, folds into `base/` as an empty rendered diff, becomes a null-op, then loses its references - stage 12's rendered diff showing the shrinking remainder at every step ([rule 5.14](rules.md#514-variants-flags-and-migrations-three-lifecycles-three-homes)). Ships the migration age nag: an overlay past its age budget fails CI instead of stalling silently |
 | When the X goes red | Act IV | The platform grows reflexes, all keyed off the one status that can only mean the world disagrees with git (CI reds never land): a red on `main` opens an incident issue (MTTR from artifacts), drafts - never merges - the revert PR, and pauses the robot; the green closes the incident. Plus the Environments mirror: each stamp's reconciliation recorded as a GitHub Deployment, so the repo's own Environments view shows what runs where - a mirror, deliberately never a gate |
