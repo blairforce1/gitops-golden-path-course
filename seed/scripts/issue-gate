@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Does this change cite a work item that exists? PASS/FAIL per issue, exit 1 on any FAIL.
+#
+#   issue-gate "<body>"                 a PR body (or commit message), as one argument
+#   issue-gate --file <path>            the same, read from a file
+#   issue-gate --landed "<body>" | --landed --file <path>
+#                                       the change has merged: a closed work item is fine
+#                                       (the merge may be what closed it)
+#
+# Reads the Closes:/Refs: trailers (rule 2.5) - one per line, `Refs: #9` or
+# `Refs: #9, #12`. Every number must be an issue in THIS repo (not a pull request) and,
+# before the merge, open: a closed work item is finished work, and a change citing it is
+# a change nobody asked for.
+set -uo pipefail
+landed=0
+[ "${1:-}" = --landed ] && { landed=1; shift; }
+case "${1:-}" in
+  --file) body="$(cat "${2:?usage: issue-gate --file <path>}")" ;;
+  "") echo 'usage: issue-gate [--landed] "<body>" | --file <path>'; exit 2 ;;
+  *) body="$1" ;;
+esac
+repo="${GH_REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"
+
+nums="$(printf '%s\n' "$body" | grep -E '^(Closes|Refs): ' | grep -oE '#[0-9]+' | tr -d '#' | sort -un)"
+if [ -z "$nums" ]; then
+  echo "FAIL  no Closes:/Refs: trailer - every change cites the work item it advances (rule 2.5)"
+  exit 1
+fi
+fails=0
+for n in $nums; do
+  if ! j="$(gh api "repos/$repo/issues/$n" 2>/dev/null)"; then
+    echo "FAIL  #$n does not exist in $repo"; fails=$((fails + 1)); continue
+  fi
+  if printf '%s' "$j" | jq -e '.pull_request' >/dev/null; then
+    echo "FAIL  #$n is a pull request, not a work item"; fails=$((fails + 1)); continue
+  fi
+  state="$(printf '%s' "$j" | jq -r .state)"; title="$(printf '%s' "$j" | jq -r .title)"
+  if [ "$state" != open ] && [ "$landed" = 0 ]; then
+    echo "FAIL  #$n is $state - \"$title\" is finished work; a change citing it is a change nobody asked for"; fails=$((fails + 1)); continue
+  fi
+  echo "PASS  #$n $state - \"$title\""
+done
+[ "$fails" -eq 0 ]

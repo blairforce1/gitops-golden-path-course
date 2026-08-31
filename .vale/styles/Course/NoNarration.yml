@@ -1,0 +1,13 @@
+extends: existence
+message: "Process narration: '%s'. The course is a finished artifact - state the behaviour as a fact."
+level: error
+ignorecase: true
+tokens:
+  - 'found in verification'
+  - 'found the hard way'
+  - 'verified on v'
+  - 'verified against v'
+  - 'in run 1'
+  - 'in run 2'
+  - 'originally predicted'
+  - 're-cut from'

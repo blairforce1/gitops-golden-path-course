@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# The umbrella toolchain gate: "are my tools the pinned ones?" in one command.
+# Pure composition - runs every check-* script in this folder and aggregates.
+# Individual scripts remain first-class for event-driven use (flux bump ->
+# check-kustomize-flux-parity + check-helm-flux-parity; dev-rung upgrade ->
+# check-version-ladder). Cluster-state gates (checkpoint-NN) are deliberately
+# NOT included: "is my toolchain right" and "is my fleet green" are different
+# questions and deserve different exit codes.
+set -uo pipefail
+
+cd "$(dirname "$0")"
+overall=0; ran=0
+
+for s in check-*; do
+  [ -x "$s" ] || continue
+  echo
+  "./$s" || overall=1
+  ran=$((ran+1))
+done
+
+echo
+if [ "$overall" -eq 0 ]; then
+  echo "check: toolchain green ($ran gates passed)"
+else
+  echo "check: FAILURES above - each failing line prescribes its own fix"
+fi
+exit "$overall"

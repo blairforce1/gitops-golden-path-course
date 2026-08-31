@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Style gate: the YAML style convention as an executable verdict, in two halves -
+#   kustofmt  - the FORMAT authority (kyaml's emitted style: indentless sequences,
+#               block over flow, canonical spacing). Skips sops files on its own.
+#   yamllint  - everything formatting can't judge (truthy keys, trailing space,
+#               duplicate keys), configured by the committed .yamllint.yaml.
+# Both are pinned containers per the tool-provisioning rule, so CI, the git hooks
+# (stage 11) and your terminal reach the identical verdict.
+# Usage: style-gate [files...]   (no args = every tracked YAML outside tool-owned trees)
+set -uo pipefail
+
+KUSTOFMT_IMG="ghcr.io/blairforce1/kustofmt:0.1.5"
+YAMLLINT_IMG="docker.io/pipelinecomponents/yamllint:0.35.0"
+
+[ -f .yamllint.yaml ] || { echo "FAIL  .yamllint.yaml exists  [stage 11 step 1 writes it]"; exit 1; }
+
+# Tool-owned trees are excluded by the CALLER, not by config: kustofmt has no ignore
+# file by design (gofmt doesn't either). flux-system/ is `flux install --export` output
+# and rewritten on every re-bootstrap - reformatting it would be a fight, not a fix.
+if [ $# -gt 0 ]; then
+  files=("$@")
+else
+  mapfile -t files < <(git ls-files '*.yaml' '*.yml' | grep -v '/flux-system/')
+fi
+[ ${#files[@]} -gt 0 ] || { echo "PASS  style-gate: no YAML to judge"; exit 0; }
+
+pass=0; fail=0
+ok()  { echo "PASS  $1"; pass=$((pass+1)); }
+bad() { echo "FAIL  $1${2:+  [$2]}"; fail=$((fail+1)); }
+
+echo "== style-gate: ${#files[@]} file(s) =="
+
+if out=$(docker run --rm -v "$PWD:/data:ro,z" -w /data "$KUSTOFMT_IMG" -l "${files[@]}" 2>&1); then
+  ok "format matches the kustomize/kyaml house style (kustofmt)"
+  printf '%s\n' "$out" | grep -i 'sops-encrypted' | sed 's/^/      /'
+else
+  printf '%s\n' "$out" | grep -v -i 'sops-encrypted' | sed 's/^/      /'
+  bad "format matches the house style" "listed above - fix in place: scripts/style-gate --fix"
+fi
+
+if docker run --rm -v "$PWD:/data:ro,z" -w /data "$YAMLLINT_IMG" yamllint -c .yamllint.yaml "${files[@]}"; then
+  ok "yamllint clean (the rules formatting cannot express)"
+else
+  bad "yamllint clean" "violations listed above - fix the YAML, not the config"
+fi
+
+echo
+echo "style-gate: $pass passed, $fail failed"
+[ "$fail" -eq 0 ]

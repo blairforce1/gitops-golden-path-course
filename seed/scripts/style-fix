@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Format YAML in place with kustofmt (the format authority behind scripts/style-gate).
+# Why stdin/stdout rather than the tool's own -w: the pinned image runs as uid 65532,
+# so a container writing directly into your bind mount hits "permission denied" under
+# both rootless podman and docker. Piping keeps the WRITE on the host, where it belongs -
+# and is exactly the "filters from images" shape the tool-provisioning rule describes.
+# Usage: style-fix [files...]   (no args = every tracked YAML outside tool-owned trees)
+set -uo pipefail
+
+KUSTOFMT_IMG="ghcr.io/blairforce1/kustofmt:0.1.5"
+
+if [ $# -gt 0 ]; then
+  files=("$@")
+else
+  mapfile -t files < <(git ls-files '*.yaml' '*.yml' | grep -v '/flux-system/')
+fi
+
+changed=0
+for f in "${files[@]}"; do
+  [ -f "$f" ] || continue
+  tmp=$(mktemp)
+  if docker run --rm -i "$KUSTOFMT_IMG" < "$f" > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+    if ! cmp -s "$f" "$tmp"; then cat "$tmp" > "$f"; echo "formatted  $f"; changed=$((changed+1)); fi
+  fi   # non-zero exit = sops-encrypted or unparseable: left untouched, deliberately
+  rm -f "$tmp"
+done
+echo "style-fix: $changed file(s) formatted"

@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# The kustomize<->flux parity gate: local `kustomize build` must render like the
+# cluster does. The cluster renders with kustomize-controller's EFFECTIVE kustomize
+# library - the go.mod replace directive wins over the require line - so version
+# strings are not the truth; the dependency graph is. This script walks it:
+#   flux pin -> controller version (flux2 manifests) -> controller go.mod effective
+#   sigs.k8s.io/kustomize/api -> CLI release (api v0.M.P co-releases as v5.(M-13).P)
+# and compares the installed kustomize, handing out the pinned install if wrong.
+set -uo pipefail
+
+cd "$(dirname "$0")/.."
+VERSIONS=clusters/versions.yaml
+pass=0; fail=0
+ok()  { echo "PASS  $1"; pass=$((pass+1)); }
+bad() { echo "FAIL  $1${2:+  [$2]}"; fail=$((fail+1)); }
+
+echo "== check-kustomize-flux-parity: render like the cluster renders =="
+
+flux_v=$(flux version --client 2>/dev/null | grep -o 'v[0-9][0-9.]*' | head -1)
+[ -n "$flux_v" ] || { echo "FAIL  flux CLI not found (run check-flux-aks-parity first)"; exit 1; }
+
+kc=$(gh api "repos/fluxcd/flux2/contents/manifests/bases/kustomize-controller/kustomization.yaml?ref=$flux_v" \
+  --jq .content 2>/dev/null | base64 -d | grep -o 'kustomize-controller/releases/download/v[0-9.]*' | head -1)
+kc=${kc##*/}
+if [ -n "$kc" ]; then
+  ok "flux $flux_v ships kustomize-controller $kc (from flux2's pinned manifests)"
+else
+  bad "controller version discoverable for flux $flux_v" "gh api failed - offline?"; exit 1
+fi
+
+gomod=$(gh api "repos/fluxcd/kustomize-controller/contents/go.mod?ref=$kc" --jq .content 2>/dev/null | base64 -d)
+eff=$(echo "$gomod" | grep 'sigs.k8s.io/kustomize/api =>' | grep -o 'v[0-9.]*$' | head -1)
+if [ -n "$eff" ]; then
+  ok "controller REPLACES kustomize api to $eff (a pin-back - the require line is not what renders)"
+else
+  eff=$(echo "$gomod" | grep -E 'sigs.k8s.io/kustomize/api v' | grep -o 'v[0-9.]*' | head -1)
+  [ -n "$eff" ] && ok "controller uses kustomize api $eff (no replace in effect)" \
+    || { bad "effective kustomize api discoverable" "go.mod parse failed"; exit 1; }
+fi
+
+# api v0.M.P co-releases with CLI v5.(M-13).P (verified for 0.19/0.20/0.21 <-> 5.6/5.7/5.8)
+m=$(echo "$eff" | cut -d. -f2); p=$(echo "$eff" | cut -d. -f3)
+want="5.$((m-13)).$p"
+
+if [ -f "$VERSIONS" ]; then
+  pin=$(yq -r '.kustomize' "$VERSIONS")
+  [ "$pin" = "$want" ] \
+    && ok "versions.yaml pin ($pin) matches the derived truth ($want)" \
+    || bad "versions.yaml pin matches the derived truth" "pinned $pin, derived $want - flux moved; update the pin"
+else
+  echo "SKIP  versions.yaml pin - no $VERSIONS yet (the pin file is born at stage 06; today's derived truth: $want)"
+fi
+
+have=$(kustomize version 2>/dev/null | grep -o 'v[0-9.]*' | head -1); have=${have#v}
+if [ "$have" = "$want" ]; then
+  ok "installed kustomize ($have) renders like the cluster"
+else
+  alt=""
+  for p in $(which -a kustomize 2>/dev/null | sort -u); do
+    v=$("$p" version 2>/dev/null | grep -o 'v[0-9.]*' | head -1); v=${v#v}
+    [ "$v" = "$want" ] && { alt="$p"; break; }
+  done
+  if [ -n "$alt" ]; then
+    bad "installed kustomize renders like the cluster" "the pinned kustomize exists at $alt but $(command -v kustomize) shadows it - fix PATH order"
+  else
+    bad "installed kustomize renders like the cluster" "have ${have:-none} at $(command -v kustomize), want $want - install: curl -sL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv$want/kustomize_v${want}_linux_amd64.tar.gz | tar xz -C ~/.local/bin"
+  fi
+fi
+
+cli_api=$(gh api "repos/fluxcd/flux2/contents/go.mod?ref=$flux_v" --jq .content 2>/dev/null | base64 -d | \
+  grep -E 'sigs.k8s.io/kustomize/api' | grep -o 'v[0-9.]*' | tail -1)
+[ "$cli_api" = "$eff" ] \
+  || echo "NOTE  flux's own CLI embeds api $cli_api but the controller renders with $eff - treat 'flux build' as advisory until they realign; the controller is the truth"
+
+echo
+echo "check-kustomize-flux-parity: $pass passed, $fail failed"
+[ "$fail" -eq 0 ]

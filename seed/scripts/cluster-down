@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Delete the local kind cluster. Everything comes back from git - that's the point.
+set -euo pipefail
+
+CLUSTER_NAME="${CLUSTER_NAME:-ggp-local-01}"
+
+if command -v podman >/dev/null; then
+  # podman-only machine, or "docker" is the podman shim (stage 00): kind needs the podman provider.
+  if ! command -v docker >/dev/null || docker --version 2>/dev/null | grep -qi podman; then
+    export KIND_EXPERIMENTAL_PROVIDER=podman
+  fi
+fi
+
+kind delete cluster --name "$CLUSTER_NAME"
+echo "ok: cluster '$CLUSTER_NAME' deleted"

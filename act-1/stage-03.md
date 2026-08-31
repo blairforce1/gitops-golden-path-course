@@ -1,0 +1,394 @@
+# Stage 03 - Flux bootstrap
+
+[← 02 - Kustomize](stage-02.md) · [Walkthrough index](../README.md)
+
+> **Where you are:** the config repo root, on `main`. **Starting state:** stage 02's end state: cluster running with the dev overlay applied, stage-02 work merged (Flux can only reconcile what's on `main`).
+
+**Goal:** the cluster pulls its state from this repo; `kubectl apply` is retired; drift is corrected by machinery, not memory.
+
+## Steps
+
+### 1. The cluster folder (deep on purpose)
+
+```
+clusters/platform/local-01/
+```
+
+Yes, two levels for one cluster. The objection is the lesson: this folder costs nothing today, and when `clusters/dev/dev-01` and `clusters/prod/prod-01` arrive in stage 07 they're *additions*, not a migration. The layout is the fleet at n=1.
+
+The name is as deliberate as the depth, and deliberately boring: `local-01` is cattle, not a pet. Every cluster here is disposable - [rule 5.2](../rules.md#52-the-cluster-is-derivable-from-git---and-every-act-proves-it) makes rebuilding one routine - and a disposable thing gets a class and a number, not a name you would grow attached to.
+
+> Aside: reserve the cattle pattern for clusters. `<class>-NN` works precisely because it is generic, which means the moment tenants or namespaces borrow it you have a `dev-01` cluster *and* a `dev-01` tenant, and `dev-01` in an alert, a log line or a commit scope no longer names one thing. One naming pattern per kind of thing: the numbers can repeat, the shapes must not.
+
+Nothing to `mkdir` here yet: step 2 creates it, because the first thing in it is Flux's own manifests.
+
+### 2. Bootstrap - by PR
+
+`flux bootstrap` is three files and a deploy key. The files: the **components** manifest (every controller and CRD), a **GitRepository** pointing at this repo with a **Kustomization** applying the cluster folder, so Flux manages Flux, and a `kustomization.yaml` naming both. Bootstrap generates them, pushes them straight to `main`, and installs from them. Stage 00's ruleset refuses that push, and rightly ([rule 1.3](../rules.md#13-protection-from-day-zero-nothing-reaches-main-except-a-merged-pr)): the cluster's own definition is the last thing that should skip review. So do what bootstrap does, in the order git demands: generate, land by PR, then point the cluster at what merged. Nothing is lost (the CLI writes every byte, [rule 3.5](../rules.md#35-the-tool-writes-the-file)); something is gained: the first thing this cluster ever runs is a diff you read, and from now on a rebuilt cluster takes its components from git rather than from flags you have to remember.
+
+Two pre-flight gates first. The version gate: the components manifest is written by your CLI, so the CLI must match what AKS will ship in Act VIII. The token gate: registering a deploy key needs the `repo` scope, which gh's standard web-flow login grants, cheaper to check here than to meet a 403 with a half-finished cluster.
+
+```sh
+# must PASS first - an OSS flux install typically runs a minor ahead of the AKS release
+./scripts/check-flux-aks-parity
+gh auth status                         # Token scopes must include 'repo' - missing? gh auth refresh -s repo
+```
+
+Generate the three files:
+
+```sh
+source ./env.sh
+mkdir -p clusters/platform/local-01/flux-system
+flux install --export > clusters/platform/local-01/flux-system/gotk-components.yaml
+flux create source git flux-system \
+  --url=ssh://git@github.com/$GH_OWNER/$CONFIG_REPO --branch=main --interval=1m \
+  --secret-ref=flux-system \
+  --export > clusters/platform/local-01/flux-system/gotk-sync.yaml
+flux create kustomization flux-system \
+  --source=GitRepository/flux-system --path=./clusters/platform/local-01 \
+  --prune --interval=10m \
+  --export >> clusters/platform/local-01/flux-system/gotk-sync.yaml
+# rule 3.5: the tool writes the file - byte-identical to what flux bootstrap would have written
+(cd clusters/platform/local-01/flux-system && kustomize create --resources gotk-components.yaml,gotk-sync.yaml)
+# three new files (-uall: plain --short collapses an untracked folder to '?? clusters/');
+# read gotk-sync.yaml - it is the whole design in two objects
+git status --short -uall
+```
+
+Land them: the seven lines from stage 02, with a body that says what a cluster definition should say:
+
+```sh
+git switch -c feat/4/bootstrap-local-01
+git add clusters
+git commit -m "feat(flux-system): install and self-sync manifests for local-01"
+git push -u origin feat/4/bootstrap-local-01
+gh pr create --title "feat(flux-system): install and self-sync manifests for local-01" \
+  --body "## What is moving
+Flux $(flux version --client | awk '{print $NF}') components plus the self-sync pair for clusters/platform/local-01: a GitRepository on this repo's main and a Kustomization applying the cluster folder.
+
+## Why now
+First cluster. From this merge the cluster's definition lives in git; the cluster is pointed at it in the next step.
+
+## Evidence
+Generated by the pinned CLI (check-flux-aks-parity PASS); gotk-sync.yaml is two objects and readable in full.
+
+## If it is wrong
+Nothing is running from it yet; revert this merge and regenerate.
+
+Refs: #4"
+# gotk-components.yaml is thousands of tool-written lines - skip it
+gh pr diff --name-only
+# the part to read: two objects, the whole loop
+cat clusters/platform/local-01/flux-system/gotk-sync.yaml
+```
+
+Read it; when the diff is what the body claims:
+
+```sh
+gh pr merge --merge --delete-branch
+git switch main && git pull
+```
+
+Now the cluster: the controllers from the pinned CLI, a deploy key minted *in* the cluster and registered read-only, and the sync pair applied from the tree you just merged. This is bootstrap's other half, and it is the last `kubectl apply` this cluster will see:
+
+```sh
+# controllers from the CLI; git's copy takes over at the first sync
+flux install
+# a keypair, generated in-cluster; prints the public half
+flux create secret git flux-system --url=ssh://git@github.com/$GH_OWNER/$CONFIG_REPO
+kubectl -n flux-system get secret flux-system -o jsonpath='{.data.identity\.pub}' | base64 -d > local-01.pub
+# read-only is the default, and correct until stage 14
+gh repo deploy-key add local-01.pub --title "flux local-01" && rm local-01.pub
+kubectl apply -f clusters/platform/local-01/flux-system/gotk-sync.yaml
+flux reconcile kustomization flux-system --with-source
+# flux-system Ready, REVISION main@sha1:<the merge commit>
+flux get kustomizations
+```
+
+> Aside: expect an email. `gh repo deploy-key add` is the line that registered the key, and GitHub notifies the owner whenever a repository gains one: "A new public key was added to `<owner>`/gitops-golden-path", carrying the title you passed (`flux local-01`), the key's fingerprint, and a removal link. That is not an alarm; it is the audit trail working, and the title is how you recognise your own change. The email like this that you *didn't* cause is what the removal link exists for.
+
+Read what you merged, now that it is running: a GitRepository (the source: this repo, at `main`, read with the key you just registered) and a Kustomization (flux-system applying the cluster folder, itself included). Flux is managed by Flux; that self-reference is load-bearing (it's how the platform upgrades itself later, when stage 14 adds two controllers by editing the components file and merging, and the one place `suspend` sticks unconditionally, see stage 04's notes). Stage 05 folds the cluster-side half into `scripts/cluster-sync`, because the rebuild rule means you will do it many times; this once, it was worth seeing every line.
+
+### 3. The first stamp
+
+`clusters/platform/local-01/resources/app-dev.kustomization.yaml` (both conventions applied to a Flux CR: `name.kind.yaml`, inside the cluster folder's `resources/`. Flux's own `flux-system/` keeps its tool-given layout, per the exemption, and Flux reconciles the cluster folder either way, because with no top-level `kustomization.yaml` it generates one over the whole directory tree):
+
+```sh
+mkdir -p clusters/platform/local-01/resources
+cat > clusters/platform/local-01/resources/app-dev.kustomization.yaml <<'EOF'
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: app-dev
+  namespace: flux-system
+spec:
+  interval: 5m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./apps/overlays/dev
+  prune: true
+  wait: true
+  timeout: 3m
+EOF
+
+git switch -c bind/4/app-dev
+git add clusters/platform/local-01/resources
+git commit -m "bind(local-01): app-dev stamp on the dev overlay"
+git push -u origin bind/4/app-dev
+gh pr create --title "bind(local-01): app-dev stamp on the dev overlay" \
+  --body "## What is moving
+A new stamp on local-01: app-dev, applying ./apps/overlays/dev with prune and health waiting.
+
+## Why now
+The cluster syncs its own folder; this is the first thing in that folder that runs a workload.
+
+## Evidence
+The file is one Flux CR, tool-shaped; nothing else in the diff.
+
+## If it is wrong
+Revert this merge; prune removes the workload with it.
+
+Refs: #4"
+gh pr diff             # one file, and the subject says what kind of change it is
+```
+
+Read it; when the diff is what the body claims:
+
+```sh
+gh pr merge --merge --delete-branch
+git switch main && git pull
+```
+
+**And the subject is `bind(local-01):`**, the second domain type from [stage 02's convention](stage-02.md#7b-the-subject-is-a-field-not-a-sentence), and the one with the sharpest rule attached: `bind` is for a change where **nothing but the pointer moves**. This commit creates a file that says "apply this path to this cluster" and touches nothing the path renders, which is exactly the case the type exists for. The moment a commit re-aims a stamp *and* edits what the stamp applies, it is not a binding change any more: split it, or type it by the payload. The scope is the **cluster**, not the stamp: what this change can reach is `local-01`, and the same stamp will later exist on `dev-01` and `prod-01` as separate bindings. Full rules: [the commit convention](../appendices/commit-convention.md).
+
+This Kustomization is the first **stamp**: one deployable unit, one standing pipeline. The coinage is deliberate: two unrelated things are officially called "Kustomization", kustomize's `kustomization.yaml` file and this Flux CR, and reserving *stamp* for the CR keeps every later sentence unambiguous. (The [terminology table](../rules.md#vocabulary) holds all the course's invented words; every page re-states a term's mapping at first use, starting here.) Everything later (stamps, tenants, ephemeral envs) is more instances of this same object. And its *name* starts the identifier chain: `app-dev` will reappear as status context, metric label, filename and commit scope; one string, seven homes ([rule 3.6](../rules.md#36-identifier-alignment-one-string-seven-homes)).
+
+> Aside: the CLI can scaffold this. `flux create kustomization app-dev --source=GitRepository/flux-system --path=./apps/overlays/dev --prune --wait --timeout=3m --interval=5m --export` emits the same YAML (durations normalised to `5m0s`-style). Two caveats before you prefer it: **without `--export` that command applies the object straight to the cluster**, the exact habit this stage retires, and flags stop scaling where stamps get interesting (`spec.patches`, `postBuild` have no flag form). The file is the lesson; the CLI is a scaffold.
+
+```sh
+# clean slate so Flux owns everything:
+kubectl delete ns ggp --ignore-not-found
+flux reconcile kustomization app-dev --with-source
+kubectl -n ggp get pods    # Running - deployed by machinery, not by you
+```
+
+`flux reconcile` pokes Flux to take action: it annotates the object and the controller runs the *same* reconciliation it would have run at the next interval: nothing extra, just without the wait. You'll use it constantly in this walkthrough (and in real life for demos and incident response); the system needs it never. `--with-source` syncs the git source first, then applies, the one-command form of "fetch my push, then converge". Omit it when git hasn't changed: correcting cluster-side drift needs no fetch, as the next demo shows.
+
+### 4. The drift demos
+
+Each demo runs in two beats, act then converge, so the output you're reading always belongs to the commands you just pasted.
+
+**Deletion.** Act:
+
+```sh
+kubectl -n ggp delete deploy app
+kubectl -n ggp get deploy                # azurite still listed, app missing - cluster and git disagree
+```
+
+Converge:
+
+```sh
+flux reconcile kustomization app-dev     # (or wait out the ≤5m interval - same result)
+kubectl -n ggp get deploy                # app is back - and AGE reads seconds: recreated, not resurrected
+```
+
+**Mutation.** Act:
+
+```sh
+kubectl -n ggp scale deploy/app --replicas=5
+kubectl -n ggp get deploy app            # 1/5 - drifted
+```
+
+Converge:
+
+```sh
+flux reconcile kustomization app-dev     # no --with-source: git hasn't changed
+# 1/1 - git wins; AGE kept counting: corrected in place, not recreated
+kubectl -n ggp get deploy app
+```
+
+No sleeps needed, and that's a lesson in itself: `flux reconcile` blocks until the Kustomization is Ready, and `wait: true` in the stamp extends Ready to workload health, so the moment it returns, the next command can assert. The asserts *are* the wait's receipt. And watch the AGE column across the two demos: it resets for the deletion (the object is new) but keeps counting through the mutation. Two different repairs, both from the same one-line loop.
+
+### 5. The first machine-mediated change
+
+The change: increase dev replicas from one to two.
+
+It lands by editing the *overlay*, never the cluster: append an op to dev's existing JSON6902 patch, merge, converge. Pause on what that sentence rules out, because this is the whole point: **GitOps, not ClickOps**. No `kubectl scale`, no `kubectl edit`, no portal slider. The deployed estate is managed through auditable commits, pushes and PRs; who changed what, when, and why is a record git writes as a side effect of working, not a story someone reconstructs from memory afterwards. Every change for the rest of the course lands this way, and the stages that follow keep returning to this point on purpose:
+
+```sh
+cat >> apps/overlays/dev/patches/app.deployment.patch.yaml <<'EOF'
+- op: replace
+  path: /spec/replicas
+  value: 2
+EOF
+
+git switch -c feat/4/app-dev-two-replicas
+git add apps/overlays/dev/patches
+git commit -m "feat(app-dev): two replicas"
+git push -u origin feat/4/app-dev-two-replicas
+gh pr create --title "feat(app-dev): two replicas" \
+  --body "## What is moving
+Dev's replica count, 1 to 2, via the dev overlay's existing JSON6902 patch.
+
+## Why now
+The first change to land through the machinery rather than through kubectl.
+
+## Evidence
+One op appended; the render diff is one line.
+
+## If it is wrong
+Revert this merge - the next block does exactly that.
+
+Refs: #4"
+gh pr diff
+```
+
+Read it; when the diff is what the body claims:
+
+```sh
+gh pr merge --merge --delete-branch
+git switch main && git pull
+# or wait ~1m - the source interval finds the merge (see Measured outcome)
+flux reconcile kustomization app-dev --with-source
+kubectl -n ggp get deploy app                        # 2/2 - landed with no kubectl
+```
+
+Now roll it back the same way, and this leg does double duty: rollback is not a special operation, just another PR riding the same machinery, and this time you *don't* trigger it. Note the `-m 1`. An ordinary commit has one parent, so "revert" has one meaning: undo this commit's diff. A *merge* commit has two: parent 1 is the branch that received the merge (`main` as it stood before the PR landed), parent 2 is the branch that was merged in. Reverting a merge therefore needs to be told which parent is the baseline, and git refuses to guess. `-m 1` says "measure against parent 1": undo everything the PR brought in and put `main` back to its pre-merge state, which is what rollback means here. (`-m 2` would answer the stranger question "what did `main` have that the branch didn't".) Merge, and the clock starts at the merge commit's own timestamp: the unaided landing is your first DORA lead-time data point ([stage 10](../act-3/stage-10.md) turns these into computed numbers once Act III's monitoring hub exists):
+
+```sh
+git switch -c revert/4/two-replicas
+git revert -m 1 --no-edit HEAD
+git push -u origin revert/4/two-replicas
+gh pr create --title "$(git log -1 --format=%s)" \
+  --body "## What is moving
+Dev back to one replica.
+
+## Why now
+Rollback is an ordinary change on the same path as the change it undoes.
+
+## Evidence
+git revert wrote the subject; the diff is the previous PR's, inverted.
+
+## If it is wrong
+Re-land the previous PR.
+
+Refs: #4"
+gh pr diff             # a revert gets read too: the previous PR's diff, inverted, and nothing else
+```
+
+Read it; when the diff is what the body claims:
+
+```sh
+gh pr merge --merge --delete-branch
+git switch main && git pull
+sha=$(git rev-parse HEAD)
+until flux get kustomization app-dev | grep -q "${sha:0:7}"; do sleep 2; done
+echo "merge-to-running: $(( $(date +%s) - $(git log -1 --format=%ct) ))s"
+kubectl -n ggp get deploy app                        # 1/1 - dev overlay back to canonical, unaided
+```
+
+**From this stage on, `kubectl apply` against this cluster is retired.**
+
+## Stop & measure
+
+- [ ] `scripts/checkpoint-03` reports all PASS, exit 0 (live checks: flux healthy and pinned, both kustomizations Ready, revision = HEAD, machinery owns the workloads, round-trip works). The bullets below are the same assertions unpacked, for reading and for understanding a FAIL:
+
+```sh
+./scripts/checkpoint-03
+```
+
+- [ ] `flux check` ends `✔ all checks passed`; expect one ✗ on the way: `✗ flux 2.7.5 <2.9.x (new CLI version is available, please upgrade)`. That's not a failure and **do not take its advice**: the lag behind latest OSS is the AKS pin working as intended ([rule 4.3](../rules.md#43-the-version-policy-follow-the-master-at-the-pace-kubernetes-sets), taught at stage 00). The line to actually verify is `✔ distribution: flux-v2.7.5`, meaning cluster matches CLI:
+
+```sh
+flux check
+```
+
+- [ ] `flux get kustomizations` shows `flux-system` and `app-dev` both `Ready=True`:
+
+```sh
+flux get kustomizations
+```
+
+- [ ] Both drift demos behave as above.
+- [ ] A merged PR lands on-cluster unaided; note **revision** in `flux get kustomization app-dev` matches the merge commit's sha:
+
+```sh
+flux get kustomization app-dev   # REVISION main@sha1:<your commit>
+git rev-parse HEAD
+```
+
+- [ ] Blob round-trip still works:
+
+```sh
+# local 8090: the cluster itself publishes 8080 for ingress (baked in at cluster-up)
+kubectl -n ggp port-forward svc/app 8090:8080 >/dev/null &
+PF=$!   # capture the PID: job numbers (%1) break on re-runs and in scripts
+for i in $(seq 1 20); do curl -sf localhost:8090/healthz >/dev/null && break; sleep 0.5; done
+
+curl -s localhost:8090/healthz; echo                                # {"status":"ok"}
+curl -si -X PUT localhost:8090/notes/hello -d 'world' | head -1     # HTTP/1.1 204 No Content
+curl -s localhost:8090/notes/hello; echo                            # world
+
+kill $PF   # stop the port-forward when done
+```
+
+**End state:** Flux installed and syncing itself from `clusters/platform/local-01/`, the `app-dev` Kustomization reconciling the dev overlay from `main`, `kubectl apply` retired. Stage 04 starts from exactly here.
+
+**Measured outcome:** merge-to-running, timed, captured on section 5's revert leg (the unaided one). Expect **≲70s, not 5m**. The *why* is worth having: a git change's latency is bounded by the **source's** interval (1m on the GitRepository you generated in step 2; the Kustomization watches the source and reacts to a new artifact immediately), while `app-dev`'s own 5m interval bounds **drift correction**, how long a cluster-side mutation can live. Two intervals, two different promises: one is your lead-time floor, the other your drift exposure. (Production removes even the floor: a webhook **Receiver** lets GitHub or CI *poke* the source to fetch immediately; merge-to-running in seconds, the interval demoted to reliability fallback. It arrives in the AKS act, the first place a webhook can actually reach the cluster.) Record the number; stage 04's alerts will timestamp the *notification* of the same loop, and the AKS stages will re-measure it on managed infrastructure.
+
+Also verified this stage, unmeasured but load-bearing: intended state survives deletion and mutation (the drift demos).
+
+Tag the boundary ([using the course §5](../using-the-course.md#5-tags-at-every-boundary)):
+
+```sh
+git tag stage-03 \
+&& git push origin stage-03 \
+&& gh issue close 4 --comment "stage-03 tagged"
+```
+
+## Audit artifacts produced
+
+- **The merge commit is now the change record**: content, author, timestamp, and the PR it came from, all in one immutable object. Its *subject* is a field too: `bind(local-01):` says what kind of change this was and what it could reach, so the complete history of what that cluster has ever been pointed at is one query:
+
+```sh
+git log --first-parent --basic-regexp --grep='^bind(local-01): '
+```
+
+- **The applied-revision binding**: the stamp's status conditions record *exactly which commit* the cluster is running, the git↔runtime link that stage 02 lacked:
+
+```sh
+# REVISION main@sha1:<your commit>
+flux get kustomization app-dev
+```
+
+- **Actor separation begins**: cluster-side changes are made by Flux's service account, not humans, and the object itself records it: every applied resource's `managedFields` now names `kustomize-controller` as the field manager, where stage 01's hand-applied copies said `kubectl-client-side-apply`. (The namespace *events* cannot tell you this: they show the same deployment-controller and kubelet cascade whoever applied.) Humans touch git; git touches the cluster. Read it back:
+
+```sh
+# → kustomize-controller  kube-controller-manager
+kubectl -n ggp get deploy app -o jsonpath='{.metadata.managedFields[*].manager}'
+```
+
+- Still absent: nothing *tells* you about success or failure; you polled. Stage 04 fixes exactly that.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `gh repo deploy-key add` → 403 | Token lacks `repo` scope (private repo) | `gh auth status` → scopes; add with `gh auth refresh -s repo`. Logged in with a fine-grained PAT instead? It needs Contents + Administration read/write on this repo |
+| `flux-system` GitRepository not Ready: `authentication required` / `Permission denied (publickey)` | The key in the cluster is not the one registered: a re-run of `flux create secret git` minted a new pair | Register the public half that is *in the secret* (the `jsonpath` line), or `kubectl -n flux-system delete secret flux-system` and redo the three lines; stage 05's `cluster-sync` does exactly this |
+| `app-dev` `Ready=False`, "path not found" | Kustomization `path` typo | Paths are repo-root-relative, `./`-prefixed |
+| Change pushed, nothing happens | The classic triad | Wrong branch? Source interval not elapsed (check `flux get sources git`)? Kustomization suspended? |
+| `wait: true` timeout but pods look fine | No health to report vs slow image pull | `flux events --for Kustomization/app-dev`; bump `timeout` if it's pull latency |
+| Prune deleted something you wanted | It wasn't in git | Correct behaviour: put it in git. That reflex change is the stage working |
+| `flux install` on a cluster that already has Flux | It upgrades in place to the CLI's version | Safe, and git's `gotk-components.yaml` reasserts whatever is merged at the next sync, so the two must agree: regenerate the file and merge it before moving the CLI (stage 16) |
+
+## What you learned, and what's next
+
+The cluster now pulls its state from git: the commit is the change record, Flux's status binds each commit to what's actually running, and drift, deletion or mutation, is corrected by machinery rather than memory. Humans touch git; git touches the cluster. That is GitOps, not ClickOps: the audit trail is commits and PRs, not a memory of CLI commands and portal clicks. But notice what you did all stage: *polled*. Nothing told you whether a change landed or a reconcile failed.
+
+**Next:** close the loop. The outcome will land on the commit itself, unaided - then we'll break the system four ways on purpose, learn to read each failure layer, and find out which breaks land a red X and which fail in silence.
+
+---
+
+**Next:** [04 - Closing the loop](stage-04.md)

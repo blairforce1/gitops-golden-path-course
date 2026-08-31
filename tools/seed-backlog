@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# Seed a fresh config repo with the course as a backlog: a milestone per act, an issue per
+# stage and per act checkpoint, in course order - so every reader gets the same numbers
+# (#1 = stage 00 ... #44 = Act VIII checkpoint) and the walkthrough can cite them literally.
+# Course-side tooling: run from the course checkout, once, at stage 00 step 1.
+#
+#   tools/seed-backlog <owner>/<config-repo>     seed it (refuses a repo with any issue or PR:
+#                                                 issues and PRs share one number sequence, and
+#                                                 a stray one shifts every number after it)
+#   tools/seed-backlog --roster                   print the roster (N, act, title, doc) - no API
+#   tools/seed-backlog --verify <owner>/<repo>    compare the seeded backlog against THIS
+#                                                 checkout's roster - run after pulling a course
+#                                                 update: a reshape after seeding means the
+#                                                 walkthrough cites numbers your issues no
+#                                                 longer carry, and this names each one
+#
+# The roster IS the README's act tables: the same rows tools/docs-gate keeps honest against
+# the stage files. There is no second list to drift.
+set -euo pipefail
+# The roster lives in THIS checkout's README - resolve it from the script's own path,
+# because stage 00 invokes this from the config repo, and the caller's cwd must not matter.
+cd "$(dirname "$(readlink -f "$0")")/.."
+die() { printf 'seed-backlog: %s\n' "$1" >&2; exit 1; }
+
+# N \t act \t kind \t title \t doc      (kind: stage | checkpoint; doc empty when unwritten)
+roster() {
+  awk -F'|' '
+    /^## / { act = 0 }   # a new top-level section ends the act tables - rows after it are not roster rows
+    /^### Act / { act++; title = $0; sub(/^### /, "", title); acts[act] = title; next }
+    /^\*Act outcome:/ && act { outcome[act] = $0; next }
+    /^\| / && act {
+      cell1 = $2; gsub(/^ +| +$/, "", cell1)
+      cell2 = $3; gsub(/^ +| +$/, "", cell2)
+      if (cell1 == "Stage" || cell1 ~ /^-+$/) next
+      doc = ""
+      if (match(cell2, /\]\([^)]*\.md\)/)) doc = substr(cell2, RSTART + 2, RLENGTH - 3)
+      kind = (cell1 ~ /checkpoint$/) ? "checkpoint" : "stage"
+      n++
+      printf "%d\t%d\t%s\t%s\t%s\n", n, act, kind, cell1, doc
+    }
+  ' README.md
+}
+milestones() {
+  awk '
+    /^## / { inacts = ($0 ~ /^## The eight acts/) }
+    /^### Act / { if (!inacts) next; act++; t = $0; sub(/^### /, "", t); title[act] = t; next }
+    /^\*Act outcome:/ && act { o = $0; gsub(/^\*|\*$/, "", o); desc[act] = o }
+    END { for (i = 1; i <= act; i++) printf "%d\t%s\t%s\n", i, title[i], desc[i] }
+  ' README.md
+}
+
+verify() {
+  local repo="$1" vfails=0 live got
+  gh api "repos/$repo" --jq .full_name >/dev/null || die "cannot read $repo - is gh logged in, and does the repo exist?"
+  live=$(gh api "repos/$repo/milestones?state=all&per_page=100" --jq '.[] | [(.number | tostring), .title] | @tsv')
+  [ -n "$live" ] || die "$repo has no milestones - nothing was seeded here (stage 00 step 1 seeds)"
+  while IFS=$'\t' read -r n title desc; do
+    got=$(printf '%s\n' "$live" | awk -F'\t' -v n="$n" '$1 == n { print substr($0, index($0, "\t") + 1) }')
+    if [ "$got" = "$title" ]; then printf 'PASS  milestone %s  %s\n' "$n" "$title"
+    else printf 'FAIL  milestone %s is "%s"; this checkout says "%s"\n' "$n" "${got:-absent}" "$title"; vfails=$((vfails + 1)); fi
+  done < <(milestones)
+  live=$(gh api --paginate "repos/$repo/issues?state=all&per_page=100" \
+           --jq '.[] | select(.pull_request | not) | [(.number | tostring), .title] | @tsv')
+  while IFS=$'\t' read -r n act kind title doc; do
+    got=$(printf '%s\n' "$live" | awk -F'\t' -v n="$n" '$1 == n { print substr($0, index($0, "\t") + 1) }')
+    if [ "$got" = "$title" ]; then printf 'PASS  #%-3d %s\n' "$n" "$title"
+    else printf 'FAIL  #%-3d is "%s"; this checkout says "%s"\n' "$n" "${got:-absent}" "$title"; vfails=$((vfails + 1)); fi
+  done < <(roster)
+  echo
+  [ "$vfails" -eq 0 ] && { echo "OK  the seeded backlog matches this checkout's roster"; exit 0; }
+  echo "$vfails mismatch(es) - the course was reshaped after seeding, or this is the wrong course checkout."
+  echo "The walkthrough cites the roster's numbers; your backlog carries the old ones. Either retitle"
+  echo "(gh issue edit <n> --repo $repo --title \"<roster title>\") or pin the course checkout to the tag you seeded from."
+  exit 1
+}
+
+case "${1:-}" in
+  --roster) roster; exit 0 ;;
+  --verify) verify "${2:?usage: seed-backlog --verify <owner>/<config-repo>}" ;;
+  */*) repo="$1" ;;
+  *) die 'usage: seed-backlog <owner>/<config-repo> | --roster | --verify <owner>/<config-repo>' ;;
+esac
+
+gh api "repos/$repo" --jq .full_name >/dev/null || die "cannot read $repo - is gh logged in, and does the repo exist?"
+[ "$(gh api "repos/$repo/issues?state=all&per_page=1" --jq length)" = 0 ] ||
+  die "$repo already has an issue or PR - the backlog must be seeded on a fresh repo, before the first PR, or the numbers the walkthrough cites are wrong"
+[ "$(gh api "repos/$repo/milestones?state=all&per_page=1" --jq length)" = 0 ] ||
+  die "$repo already has a milestone - seed once, on a fresh repo"
+
+echo "milestones"
+while IFS=$'\t' read -r n title desc; do
+  got=$(gh api -X POST "repos/$repo/milestones" -f title="$title" -f description="$desc" --jq .number)
+  [ "$got" = "$n" ] || die "milestone '$title' got number $got, expected $n"
+  printf '  %d  %s\n' "$n" "$title"
+  gh label create "act-$n" --repo "$repo" --color 1d76db --description "$title" --force >/dev/null
+done < <(milestones)
+gh label create checkpoint --repo "$repo" --color 5319e7 --description "an act's end-to-end drill" --force >/dev/null
+
+echo "issues"
+while IFS=$'\t' read -r n act kind title doc; do
+  ms=$(milestones | awk -F'\t' -v a="$act" '$1 == a { print $2 }')
+  if [ -z "$doc" ]; then
+    body="Not yet written."
+  elif [ "$kind" = checkpoint ]; then
+    body="Course: \`$doc\` in your course checkout.
+
+The act's drills cite this issue in their PR trailers (\`Refs: #$n\`). Closing it - and the milestone - is the checkpoint's last criterion, after the act tag."
+  else
+    body="Course: \`$doc\` in your course checkout.
+
+Every PR this stage opens cites this issue in a trailer - \`Refs: #$n\` - and the stage's last stop-and-measure line closes it, after the tag. Merge is not verification; the stop-and-measure is."
+  fi
+  labels="act-$act"; [ "$kind" = checkpoint ] && labels="$labels,checkpoint"
+  url=$(gh issue create --repo "$repo" --title "$title" --body "$body" --milestone "$ms" --label "$labels")
+  got=${url##*/}
+  [ "$got" = "$n" ] || die "issue '$title' got number $got, expected $n - something created an issue or PR mid-seed"
+  printf '  #%-3d %s\n' "$n" "$title"
+done < <(roster)
+
+echo
+echo "seeded: $(milestones | wc -l) milestones, $(roster | wc -l) issues. Where am I:  gh issue list --milestone \"$(milestones | head -1 | cut -f2)\" --search \"sort:created-asc\""
+echo "in the portal (GitHub sorts newest-first by default; this link walks the course in order):"
+echo "  https://github.com/$repo/issues?q=is%3Aissue+is%3Aopen+sort%3Acreated-asc"

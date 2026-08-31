@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Stage 07 checkpoint: the fleet exists - three clusters, each running what its folder says.
+# Every line is PASS/FAIL + what it means; exits non-zero if anything failed.
+set -uo pipefail
+
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)   # derived - no identity stored
+pass=0; fail=0
+ok()  { echo "PASS  $1"; pass=$((pass+1)); }
+bad() { echo "FAIL  $1${2:+  [$2]}"; fail=$((fail+1)); }
+
+echo "== checkpoint-07: the cluster is what its folder says =="
+
+# ctx:stamp:overlay triples - the binding each cluster's folder declares
+for c in kind-ggp-local-01:app-dev:dev kind-ggp-dev-01:app-dev:dev kind-ggp-prod-01:app-prod:prod; do
+  ctx=${c%%:*}; rest=${c#*:}; stamp=${rest%%:*}; overlay=${rest#*:}
+
+  st=$(kubectl --context "$ctx" -n flux-system get kustomization "$stamp" \
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+  [ "$st" = "True" ] && ok "$ctx: $stamp Ready" || bad "$ctx: $stamp Ready" "got: ${st:-absent}"
+
+  want=$(yq '.images[0].newTag' "apps/overlays/$overlay/kustomization.yaml" 2>/dev/null)
+  got=$(kubectl --context "$ctx" -n ggp get deploy app \
+    -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null); got=${got##*:}
+  [ -n "$want" ] && [ "$got" = "$want" ] \
+    && ok "$ctx: runs the $overlay overlay's pin ($got) - git<->runtime binding per cluster" \
+    || bad "$ctx: runs the $overlay overlay's pin" "git: ${want:-?} cluster: ${got:-?}"
+
+  kubectl --context "$ctx" -n flux-system get alert cluster-secrets-status >/dev/null 2>&1 \
+    && ok "$ctx: Alert covers cluster-secrets (decryption failures are loud, fleet-wide)" \
+    || bad "$ctx: Alert covers cluster-secrets" "allowlist gap - a decrypt failure on this cluster would be silent and green"
+done
+
+# /healthz, not / - the app has no root route; a 404 here would be the app answering (stage 05 lesson)
+for p in 8081 8082; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$p/healthz" 2>/dev/null)
+  case "$code" in
+    2*) ok "app answers through ingress on :$p (/healthz)";;
+    *) bad "app answers through ingress on :$p" "got HTTP ${code:-nothing} - 404 means route/app path, nothing/refused means port mappings";;
+  esac
+done
+
+sha=$(git rev-parse HEAD)
+n=$(gh api "repos/$REPO/commits/$sha/status" --jq '[.statuses[].context] | unique | length' 2>/dev/null)
+[ "${n:-0}" -ge 3 ] && ok "HEAD carries contexts from multiple clusters ($n) - one commit, N attributable verdicts" \
+  || bad "HEAD carries contexts from multiple clusters" "got ${n:-0} - a cluster's Provider/Alert/token missing, or HEAD superseded"
+
+echo
+echo "checkpoint-07: $pass passed, $fail failed"
+[ "$fail" -eq 0 ]

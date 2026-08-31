@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Undo a merged PR, by PR: branch, `git revert -m 1`, push, open - and stop there.
+#
+#   pr-revert [<merge-sha>] "<why now>" ["#<issue>"]     (default: HEAD; the work item is
+#                                                    inherited from the reverted merge's trailers)
+#
+# git writes the subject - Revert "<the PR title>" - and it is never rewritten (commit
+# convention rule 6): that string is the durable link to what it undoes. The body is
+# assembled from what git already knows plus the one sentence only you know: why now.
+# Merging is your line, after the diff:
+#   gh pr merge --merge --delete-branch && git switch main && git pull
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+die() { printf 'pr-revert: %s\n' "$1" >&2; exit 1; }
+
+refs=''
+case $# in
+  1) ref=HEAD; why="$1" ;;
+  2) ref="$1"; why="$2" ;;
+  3) ref="$1"; why="$2"; refs="$3" ;;
+  *) die 'usage: pr-revert [<merge-sha>] "<why now>" ["#<issue>"]' ;;
+esac
+[ -n "$why" ] || die "say why - the PR body is the deployment record (rule 2.2)"
+[ "$(git branch --show-current)" = main ] || die "start from main"
+git diff --quiet && git diff --cached --quiet || die "working tree not clean - a revert carries nothing else"
+sha="$(git rev-parse "$ref")"
+[ "$(git rev-list --parents -n 1 "$sha" | wc -w)" -ge 3 ] || die "${sha:0:7} is not a merge commit - only merged PRs reach main, so only merges get reverted"
+subject="$(git log -1 --format=%s "$sha")"
+# the undo cites the same work item the change did (rule 2.5) unless told otherwise
+[ -n "$refs" ] || refs="$(git log -1 --format=%B "$sha" | grep -E '^(Closes|Refs): ' | grep -oE '#[0-9]+' | sort -u | paste -sd, - | sed 's/,/, /g')"
+[ -n "$refs" ] || die "${sha:0:7} cites no work item - pass one: pr-revert $ref \"<why now>\" \"#<issue>\""
+pr="$(gh pr list --state merged --search "$sha" --json number --jq '.[0].number' 2>/dev/null || true)"
+
+# the branch follows rule 2.4's <type>/<issue>/<slug>, citing the first inherited work item
+n="$(grep -oE '[0-9]+' <<<"$refs" | head -1)"
+rbranch="revert/$n/${sha:0:7}"
+git switch -q -c "$rbranch"
+git revert -m 1 --no-edit "$sha"
+git push -q -u origin "$rbranch"
+body="## What is moving
+Reverts ${sha:0:7} - \"$subject\"${pr:+ (#$pr)}.
+
+## Why now
+$why
+
+## Evidence
+The diff is the reverted merge's, inverted; git wrote the subject.
+
+## If it is wrong
+Re-land${pr:+ #$pr} - or revert this merge in turn.
+
+Refs: $refs"
+./scripts/issue-gate "$body" || die "the work item must exist (and be open)"
+gh pr create --title "$(git log -1 --format=%s)" --body "$body"
+echo
+gh pr diff
+echo
+echo "Read the diff. Then, and only then:  gh pr merge --merge --delete-branch && git switch main && git pull"

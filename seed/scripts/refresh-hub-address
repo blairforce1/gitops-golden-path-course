@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Re-derive the monitoring hub's address into every cluster's cluster-facts.
+# The hub is reached by the platform node's container IP, which is created with the
+# cluster and dies with it - so every fleet rebuild invalidates the committed value
+# and the spokes remote-write into nothing. This edits git; you review and commit.
+# (On AKS this becomes a private endpoint that outlives the cluster - stage 12+.)
+set -uo pipefail
+
+NODE="${HUB_NODE:-ggp-control-plane}"
+PORT="${HUB_PORT:-30090}"
+
+ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$NODE" 2>/dev/null)
+[ -n "$ip" ] || { echo "FAIL  hub node '$NODE' not found - is the platform cluster up?"; exit 1; }
+url="http://$ip:$PORT"
+
+changed=0
+for f in clusters/*/*/resources/cluster-facts.configmap.yaml; do
+  [ -f "$f" ] || continue
+  old=$(yq '.data.monitoring_hub' "$f")
+  if [ "$old" = "$url" ]; then
+    echo "ok        ${f#clusters/} already $url"
+  else
+    NEW="$url" yq -i '.data.monitoring_hub = strenv(NEW)' "$f"
+    echo "updated   ${f#clusters/}  $old -> $url"
+    changed=$((changed+1))
+  fi
+done
+
+echo
+if [ "$changed" -gt 0 ]; then
+  echo "$changed file(s) updated - review with 'git diff clusters', then commit, push and reconcile."
+else
+  echo "nothing to do: every cluster already points at $url"
+fi

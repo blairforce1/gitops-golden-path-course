@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Watch a cluster's SLIs move, one line per sample. The point of the tool is TIME:
+# SLIs are rate() windows, so a break takes ~a minute to show and a fix takes the
+# window length to clear. Ctrl-C when you have seen what you came for.
+# Usage: slo-watch <cluster> [interval-seconds]     e.g. slo-watch dev-01 15
+set -uo pipefail
+
+CLUSTER="${1:?usage: slo-watch <cluster> [interval-seconds]}"
+EVERY="${2:-15}"
+PORT="${SLO_WATCH_PORT:-19096}"
+
+kubectl --context kind-ggp-local-01 -n monitoring port-forward svc/kube-prometheus-stack-prometheus \
+  "$PORT:9090" >/dev/null 2>&1 &
+PF=$!
+trap 'kill "$PF" 2>/dev/null; wait "$PF" 2>/dev/null; echo' EXIT
+for _ in $(seq 1 20); do curl -s -o /dev/null "http://localhost:$PORT/-/ready" && break; sleep 1; done
+curl -s -o /dev/null --max-time 5 "http://localhost:$PORT/-/ready" \
+  || { echo "FAIL  hub reachable  [is the platform cluster up and the monitoring stamp Ready?]"; exit 1; }
+
+q() { curl -s --max-time 10 "http://localhost:$PORT/api/v1/query" --data-urlencode "query=$1" \
+      | yq -p=json '.data.result[0].value[1] // ""' 2>/dev/null; }
+
+target=$(q 'slo:app_availability:target')
+printf 'watching %s every %ss - SLO target %s (Ctrl-C to stop)\n\n' "$CLUSTER" "$EVERY" "${target:-?}"
+printf '%-10s %14s %12s %s\n' TIME AVAILABILITY P95 ALERT
+
+while true; do
+  avail=$(q "100 * slo:app_availability:ratio_rate5m{cluster=\"$CLUSTER\"}")
+  p95=$(q "1000 * slo:app_latency_p95:5m{cluster=\"$CLUSTER\"}")
+  firing=$(q "count(ALERTS{alertname=~\"AppErrorBudget.*\",alertstate=\"firing\",cluster=\"$CLUSTER\"})")
+  # empty = the indicator does not exist right now: no traffic in the window
+  [ -n "$avail" ] && a=$(printf '%12.3f%%' "$avail") || a="     no traffic"
+  [ -n "$p95" ]   && p=$(printf '%9.1f ms' "$p95")   || p="        -"
+  [ -n "$firing" ] && [ "$firing" != "0" ] && f="FIRING" || f="-"
+  printf '%-10s %14s %12s %s\n' "$(date +%H:%M:%S)" "$a" "$p" "$f"
+  sleep "$EVERY"
+done

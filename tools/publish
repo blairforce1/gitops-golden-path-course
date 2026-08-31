@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# tools/publish - build the public tree from this working repo.
+#
+# Usage, from the course repo root:
+#   tools/publish [<public-checkout>]
+#
+# Default public checkout: ../gitops-golden-path-course-public
+#
+# The public repo carries the shared surfaces and every published act in
+# full; every file of an act still in verification is replaced by a
+# coming-soon stub that keeps the README links, the nav lines and the
+# issue roster intact. STATUS.md ships as the verification table only
+# (the run narrative stays here). The README gains a work-in-progress
+# note that exists only in the published tree.
+#
+# To publish the next act: add its number to PUBLISHED_ACTS, rerun,
+# review the diff in the public checkout, commit and push there.
+# Author-side tooling: lives in tools/, never seeded, no course text
+# references it.
+
+set -euo pipefail
+
+PUBLISHED_ACTS="1" # space-separated act numbers published in full
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+dest="${1:-$root/../gitops-golden-path-course-public}"
+dest="$(cd "$dest" && pwd)"
+
+[ -d "$dest/.git" ] || { echo "publish: no git checkout at $dest" >&2; exit 1; }
+[ "$dest" != "$root" ] || { echo "publish: refusing to publish onto itself" >&2; exit 1; }
+
+roman() {
+  case "$1" in
+    1) echo I ;; 2) echo II ;; 3) echo III ;; 4) echo IV ;;
+    5) echo V ;; 6) echo VI ;; 7) echo VII ;; 8) echo VIII ;;
+    *) echo "publish: no act $1" >&2; exit 1 ;;
+  esac
+}
+
+is_published() {
+  for a in $PUBLISHED_ACTS; do [ "$a" = "$1" ] && return 0; done
+  return 1
+}
+
+rsync -a --delete --exclude .git "$root"/ "$dest"/
+
+# Unpublished acts: one stub per file, keeping line 1 (title), line 3
+# (the nav line) and the Next: line so every link into and out of the
+# act keeps resolving and docs-gate's shape checks hold.
+for dir in "$root"/act-*/; do
+  act="${dir%/}"; act="${act##*-}"
+  is_published "$act" && continue
+  r="$(roman "$act")"
+  for f in "$dir"*.md; do
+    out="$dest/act-$act/$(basename "$f")"
+    {
+      sed -n 1p "$f"
+      echo
+      sed -n 3p "$f"
+      echo
+      printf 'Coming soon. This page lands when Act %s'\''s verification completes. The [README](../README.md) act tables say what it covers, and [STATUS.md](../STATUS.md) is the verification ledger.\n' "$r"
+      echo
+      echo '---'
+      echo
+      grep '^\*\*Next:' "$f" | tail -1
+    } > "$out"
+  done
+done
+
+# STATUS.md: preamble and table only; the run narrative is not course
+# material and stays in this repo. Em dashes swapped for the public copy.
+awk 'in_t && $0 !~ /^\|/ && $0 !~ /^$/ {exit} {print; if ($0 ~ /^\|/) in_t=1}' \
+  "$root/STATUS.md" | sed 's/—/-/g' > "$dest/STATUS.md"
+
+# README: the work-in-progress note, published tree only.
+awk 'NR==2 {
+  print ""
+  print "> **Work in progress.** Act I is live and verified end to end. Acts II to VI are written and land here as each one'\''s verification completes; Acts VII and VIII follow. [STATUS.md](STATUS.md) is the verification ledger."
+  print ""
+  next
+} {print}' "$root/README.md" > "$dest/README.md"
+
+echo "publish: built $dest (acts published in full: $PUBLISHED_ACTS)"
+echo "publish: review with  git -C $dest status  and  git -C $dest diff"

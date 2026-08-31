@@ -1,0 +1,245 @@
+#!/usr/bin/env bash
+# The commit convention as a verdict - one grammar, four ways in.
+#
+#   --docs [files...]     every commit message the walkthrough tells a reader to type
+#   --range <rev-range>   real commits, e.g. origin/main..HEAD
+#   --file <path>         one message file - the commit-msg hook's argument
+#   --subject "<t>" [<b>] one subject (+ optional body) - the PR-title check
+#
+# The point of --docs is that the course cannot teach a convention it does not follow.
+# Every `git commit -m`, `gh pr create --title`, `pr-open <branch> "<subject>"` and
+# `--commit-template` string in the walkthrough is extracted and judged by the SAME grammar that judges real commits, so
+# "the docs drifted" is a failing check rather than a thing someone notices in year two.
+#
+# Grammar and rules: appendices/commit-convention.md in the course repo
+set -uo pipefail
+
+TYPES_DOMAIN='break|pin|promote|bind|rotate|access|policy'
+TYPES_STANDARD='feat|fix|docs|refactor|test|ci|chore|revert|perf|build|style'
+MAXLEN=100                    # subjects here carry a scope and a real clause; 72 is for prose
+
+# The scope registry - the blast radius a domain type is allowed to name.
+# Kinds, in resolution order: stamp, cluster, class, tree. See the appendix.
+SCOPES_STAMP='app-dev|app-prod|app-acme|app-house|infrastructure|monitoring|monitoring-crs|cluster-secrets|flux-system'
+SCOPES_CLUSTER='local-01|dev-01|prod-01'
+SCOPES_CLASS='platform|dev|prod'
+SCOPES_TREE='base|overlays|clusters|infrastructure|policy|secrets|scripts|ci|hooks|app'
+REGISTRY="$SCOPES_STAMP|$SCOPES_CLUSTER|$SCOPES_CLASS|$SCOPES_TREE"
+
+fails=0; checked=0; notes=0
+bad()  { printf 'FAIL  %s\n        %s\n' "$1" "$2"; fails=$((fails+1)); }
+note() { printf 'NOTE  %s\n        %s\n' "$1" "$2"; notes=$((notes+1)); }
+
+# Judge one subject line. $2 is where it came from, for the report. $3 is the full
+# message when one exists - only --range and --file have a body to read, and rule 9's
+# Roll-forward requirement can only be checked where there is one.
+judge() {
+  local s="$1" where="$2" full="${3-}" type scope rest
+  checked=$((checked+1))
+
+  # git's own revert subject is machine output and is never rewritten (rule 6).
+  case "$s" in 'Revert "'*'"'|'Reapply "'*'"') return 0;; esac
+  # Merge commits carry the PR title once merge_commit_title=PR_TITLE; the default
+  # form is GitHub's and predates the policy, so it is reported, not failed.
+  case "$s" in 'Merge pull request #'*|'Merge branch '*|'Merge remote-tracking '*) return 0;; esac
+  # A title read back from git ($(git log -1 --format=%s)) is a revert subject the PR
+  # re-uses; the real string is judged at run time by the PR check, not here.
+  case "$s" in '$(git log'*'%s'*) note "$where" "title is read from git at run time (a revert's own subject)  ->  $s"; return 0;; esac
+  case "$s" in '$'[A-Za-z_]*|'${'*) note "$where" "title is a shell variable, judged at run time by the PR check  ->  $s"; return 0;; esac
+  # A subject that IS a placeholder (usage text: pr-open <branch> "<subject>") is template,
+  # not instruction - the same licence <scope> gets below.
+  case "$s" in '<'*'>') return 0;; esac
+
+  if ! printf '%s' "$s" | grep -Eq "^($TYPES_DOMAIN|$TYPES_STANDARD)(\([^)]+\))?!?: .+"; then
+    bad "$where" "not type(scope): description  ->  $s"; return 1
+  fi
+
+  type=${s%%[(:]*}
+  rest=${s#"$type"}
+  if [ "${rest#\(}" != "$rest" ]; then scope=${rest#\(}; scope=${scope%%)*}; else scope=''; fi
+
+  if [ ${#s} -gt $MAXLEN ]; then
+    bad "$where" "subject is ${#s} chars (max $MAXLEN)  ->  $s"; return 1
+  fi
+  case "$s" in *.) bad "$where" "subject ends in a period  ->  $s"; return 1;; esac
+
+  # Scope rules. A placeholder in printed template text (<scope>) is allowed through.
+  case "$scope" in '<'*'>') return 0;; esac
+  if printf '%s' "$type" | grep -Eq "^($TYPES_DOMAIN)$"; then
+    if [ -z "$scope" ]; then
+      # rule 7: an omitted scope is legal and means fleet-wide. Named non-scopes are not.
+      return 0
+    fi
+    if ! printf '%s' "$scope" | grep -Eq "^($REGISTRY)$"; then
+      bad "$where" "scope '$scope' is not in the registry (stamp|cluster|class|tree)  ->  $s"; return 1
+    fi
+  fi
+  case "$scope" in all|global|fleet|everything)
+    bad "$where" "scope '$scope' means 'no filter' - omit it instead (rule 7)  ->  $s"; return 1;;
+  esac
+
+  # Rule 9: `!` declares that a revert will not restore the previous state, and a bare
+  # `!` is a warning with no instruction. Require the reason and the recipe. Only
+  # checkable where a body exists - a PR title and a `git commit -m` string have none,
+  # so those are noted rather than failed, which is the honest verdict.
+  case "$s" in
+    *'!:'*)
+      if [ -n "$full" ]; then
+        if ! printf '%s' "$full" | grep -q '^Roll-forward:'; then
+          bad "$where" "'!' without a Roll-forward: trailer - say what to do instead of reverting (rule 9)  ->  $s"
+          return 1
+        fi
+      else
+        note "$where" "'!' present; no body here to check for the Roll-forward: trailer (rule 9)  ->  $s"
+      fi ;;
+  esac
+  return 0
+}
+
+mode="${1:-}"; shift 2>/dev/null
+
+case "$mode" in
+  --subject) judge "${1:?usage: commit-gate --subject \"<text>\" [\"<body>\"]}" "PR title" "${2-}" ;;
+
+  --file)
+    f="${1:?usage: commit-gate --file <path>}"
+    # first non-comment, non-blank line is the subject (the .gitmessage template leads with a blank)
+    subj=$(grep -v '^#' "$f" | grep -m1 -v '^[[:space:]]*$')
+    judge "$subj" "$f" "$(grep -v '^#' "$f")" ;;
+
+  --range)
+    r="${1:?usage: commit-gate --range <rev-range>}"
+    while IFS= read -r -d '' rec; do
+      sha=${rec%%$'\t'*}; rest=${rec#*$'\t'}
+      subj=${rest%%$'\n'*}
+      [ -n "$sha" ] || continue
+      judge "$subj" "$sha" "$rest"
+    done < <(git log -z --format='%h%x09%B' "$r") ;;
+
+  --docs)
+    files=("$@")
+    # --cached AND --others: a brand-new quest is untracked until it is staged, and the
+    # file someone is currently writing is the one the gate most needs to see.
+    # --exclude-standard keeps .gitignore honoured.
+    [ ${#files[@]} -gt 0 ] || mapfile -t files < <(git ls-files --cached --others --exclude-standard 'seed/scripts/*' '*.md' | sort -u)
+    for f in "${files[@]}"; do
+      [ -f "$f" ] || continue
+      # This script cannot scan itself: its extractor patterns and their comments match
+      # their own source text, and none of it is a message a reader is told to type.
+      case "$f" in *scripts/commit-gate) continue;; esac
+      # Extract the message a reader is told to type. One per line, tab-separated with
+      # its line number. Deliberately literal: shell/Go-template expansions are kept as
+      # written, because the grammar lives in the parts that are not expanded.
+      # A `git commit` line can carry several -m flags; git joins them as paragraphs, so
+      # the first is the subject and the rest are the body. Reading all of them is what
+      # lets --docs enforce rule 9's Roll-forward trailer instead of merely noting it.
+      # Records are  <line>\t<subject>[\x01<body-para>...]
+      while IFS=$'\t' read -r ln rec; do
+        [ -n "$rec" ] || continue
+        msg=${rec%%$'\x01'*}
+        body=''
+        [ "$msg" != "$rec" ] && body=${rec#*$'\x01'}
+        body=${body//$'\x01'/$'\n'}
+        judge "$msg" "$f:$ln" "${body//$'\x02'/$'\n'}"
+      done < <(awk '
+        # NOTE: match() sets the GLOBAL RSTART/RLENGTH, so every caller must save the
+        # outer match before calling this - otherwise the loop advances by the inner
+        # match length and re-matches the same text. That bug emitted one template
+        # three times before it was caught.
+        function unquote(piece,   q) {
+          if (match(piece, /"[^"]*"$/))                        q = substr(piece, RSTART+1, RLENGTH-2)
+          else if (match(piece, /'"'"'[^'"'"']*'"'"'$/))       q = substr(piece, RSTART+1, RLENGTH-2)
+          else q = ""
+          return q
+        }
+        # A shell command wrapped with trailing backslashes is ONE command; join it before
+        # looking for flags, or a -m on the second line is invisible and rule 9 could
+        # never be checked here. Joining on UNCLOSED QUOTES was tried and reverted: shell
+        # text nests " inside $(...) inside '"'"'...'"'"', so quote counting mis-balances and
+        # silently swallows whole commands - a gate that under-reports is worse than one
+        # that admits it cannot see. A multi-paragraph PR --body is therefore not read
+        # here; CI checks the real body against the real title instead.
+        {
+          if (buf == "") { start = NR }
+          line = $0
+          if (line ~ /\\[[:space:]]*$/) { sub(/\\[[:space:]]*$/, "", line); buf = buf line; next }
+          buf = buf line
+          process(buf, start)
+          buf = ""
+        }
+        END { if (buf != "") process(buf, start) }
+        # records are read a line at a time downstream, so an embedded newline (a PR body
+        # with paragraphs) has to travel as \x02 and be turned back on the other side.
+        function emit(ln, out) { gsub(/\n/, "\x02", out); print ln "\t" out }
+        function process(cmd, ln,   rest, n, out, q, st, len) {
+          # every -m/--message string on a git commit line, in order: subject then body
+          if (cmd ~ /git commit/) {
+            rest = cmd; n = 0; out = ""
+            while (match(rest, /(-m|-am|--message)[ =]("[^"]*"|'"'"'[^'"'"']*'"'"')/)) {
+              st = RSTART; len = RLENGTH
+              q = unquote(substr(rest, st, len))
+              if (q != "") { out = (n++ == 0) ? q : out "\x01" q }
+              rest = substr(rest, st + len)
+            }
+            if (n > 0) emit(ln, out)
+          }
+          # a PR title is the merge subject (merge_commit_title=PR_TITLE); its --body
+          # becomes the merge body, so the pair is judged exactly like a commit
+          if (cmd ~ /gh pr create/) {
+            out = ""; rest = cmd
+            if (match(rest, /--title[ =]("[^"]*"|'"'"'[^'"'"']*'"'"')/))
+              out = unquote(substr(rest, RSTART, RLENGTH))
+            if (out != "") {
+              if (match(rest, /--body[ =]("[^"]*"|'"'"'[^'"'"']*'"'"')/))
+                out = out "\x01" unquote(substr(rest, RSTART, RLENGTH))
+              emit(ln, out)
+            }
+          }
+          # pr-open <branch> "<subject>": the subject is the PR title, so the merge subject;
+          # the body arrives on stdin (a heredoc) and is judged by pr-open itself at run time
+          if (cmd ~ /pr-open[ ]+[^ ]+[ ]+["'"'"']/) {
+            rest = cmd
+            if (match(rest, /pr-open[ ]+[^ ]+[ ]+("[^"]*"|'"'"'[^'"'"']*'"'"')/)) {
+              q = unquote(substr(rest, RSTART, RLENGTH))
+              if (q != "") emit(ln, q)
+            }
+          }
+          # the robot template: a subject with no body it could carry
+          rest = cmd
+          while (match(rest, /--commit-template=("[^"]*"|'"'"'[^'"'"']*'"'"')/)) {
+            st = RSTART; len = RLENGTH
+            q = unquote(substr(rest, st, len))
+            if (q != "") emit(ln, q)
+            rest = substr(rest, st + len)
+          }
+        }' "$f")
+      # Every PR body the walkthrough types cites a work item (rule 2.5): pr-open
+      # heredocs and literal `gh pr create --body "..."` strings, whether --body sits on the
+      # gh line or on a backslash-continued one. A $var body is judged at run time.
+      while IFS= read -r ln; do
+        [ -n "$ln" ] && bad "$f:$ln" "PR body cites no work item - end it with a Refs: #<issue> trailer (rule 2.5)"
+      done < <(awk '
+        inb { if ($0 ~ /^EOF$/) { if (!has) print ln; inb = 0 } else if ($0 ~ /^(Refs|Closes): #/) has = 1; next }
+        inq { if ($0 ~ /^(Refs|Closes): #/) has = 1; if ($0 ~ /"/) { if (!has) print ln; inq = 0 }; next }
+        /pr-open [^ ]+ .*<<.?EOF/ { inb = 1; ln = NR; has = 0; next }
+        /gh pr create/ && /--body "\$/ { pend = 0; next }
+        pend && /^[ \t]*--body "/ { ln = pend; pend = 0; s = $0; sub(/.*--body "/, "", s); if (s ~ /"/) { print ln } else { inq = 1; has = 0 }; next }
+        /gh pr create/ && /--body "/ { ln = NR; s = $0; sub(/.*--body "/, "", s); if (s ~ /"/) { print ln } else { inq = 1; has = 0 }; next }
+        /gh pr create/ && /\\[ \t]*$/ { pend = NR; next }
+        /--body "\$/ { pend = 0 }
+      ' "$f")
+    done ;;
+
+  *) echo "usage: commit-gate --docs [files...] | --range <rev-range> | --file <path> | --subject \"<text>\" [\"<body>\"]"; exit 2 ;;
+esac
+
+if [ "$fails" -eq 0 ]; then
+  if [ "$notes" -gt 0 ]; then
+    echo "PASS  $checked commit message(s) obey the convention  ($notes unverifiable, noted above)"
+  else
+    echo "PASS  $checked commit message(s) obey the convention"
+  fi
+else
+  echo "FAIL  $fails of $checked commit message(s) violate the convention"
+fi
+exit $(( fails > 0 ))

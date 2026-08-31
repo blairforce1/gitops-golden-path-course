@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Rendered-standards gate: renders every app overlay and tests the result against
+# policy/ with conftest. A pure function over the working tree - no cluster, no
+# credentials - so this SAME file runs locally as a paste block, in CI, and (stage 11)
+# from a pre-push hook: one verdict, three venues. PASS/FAIL contract as always.
+set -uo pipefail
+
+pass=0; fail=0
+ok()  { echo "PASS  $1"; pass=$((pass+1)); }
+bad() { echo "FAIL  $1${2:+  [$2]}"; fail=$((fail+1)); }
+
+echo "== policy-gate: rendered output vs policy/ =="
+
+[ -d policy ] || { echo "FAIL  policy/ exists  [stage 08 step 4 writes it]"; exit 1; }
+
+for o in dev prod; do
+  if ! out=$(kustomize build "apps/overlays/$o" 2>&1); then
+    bad "$o overlay renders" "$(printf '%s' "$out" | head -1)"
+    continue
+  fi
+  if msg=$(printf '%s' "$out" | docker run --rm -i -v "$PWD/policy:/policy:ro,z" \
+      docker.io/openpolicyagent/conftest:v0.62.0 test --policy /policy - 2>&1); then
+    ok "$o render passes policy (what the cluster would receive, judged before it does)"
+  else
+    bad "$o render passes policy" "$(printf '%s' "$msg" | grep -m2 -i 'fail\|error' | tr '\n' '; ')"
+  fi
+done
+
+echo
+echo "policy-gate: $pass passed, $fail failed"
+[ "$fail" -eq 0 ]

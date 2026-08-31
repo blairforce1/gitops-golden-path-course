@@ -1,0 +1,43 @@
+name: Errata - a stage step failed
+description: You walked a stage and a step did not do what the page said.
+title: "errata(stage-NN): what failed, in a line"
+labels:
+  - errata
+body:
+  - type: input
+    id: where
+    attributes:
+      label: Stage and step
+      placeholder: stage 06, step 3
+    validations:
+      required: true
+  - type: textarea
+    id: ran
+    attributes:
+      label: What you ran
+      description: The paste block or command, exactly as executed.
+      render: sh
+    validations:
+      required: true
+  - type: textarea
+    id: got
+    attributes:
+      label: What happened
+      description: Full output, unedited.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What the page claims
+      description: The expected output or behaviour the course states.
+    validations:
+      required: true
+  - type: input
+    id: toolchain
+    attributes:
+      label: Toolchain
+      placeholder: flux 2.8.8, kustomize v5.8.1, kind v0.30.0, Fedora 44
+    validations:
+      required: false

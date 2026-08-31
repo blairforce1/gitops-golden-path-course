@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Stage 02 checkpoint: labeled, self-judging checks over the rendered output.
+# Every line is PASS/FAIL + what it means; exits non-zero if anything failed.
+# CI runs this exact script - the checkpoint and the pipeline can never disagree.
+set -uo pipefail
+
+KUBECONFORM_IMG="ghcr.io/yannh/kubeconform:v0.6.7"
+pass=0; fail=0
+ok()  { echo "PASS  $1"; pass=$((pass+1)); }
+bad() { echo "FAIL  $1${2:+  [$2]}"; fail=$((fail+1)); }
+
+dev()  { kustomize build apps/overlays/dev; }
+prod() { kustomize build apps/overlays/prod; }
+
+echo "== checkpoint-02: kustomize renders what we meant =="
+
+dev  >/dev/null 2>&1 && ok "dev overlay builds"  || bad "dev overlay builds"
+prod >/dev/null 2>&1 && ok "prod overlay builds" || bad "prod overlay builds"
+
+if prod | docker run --rm -i "$KUBECONFORM_IMG" -strict >/dev/null 2>&1; then
+  ok "prod output schema-valid (kubeconform)"
+else
+  bad "prod output schema-valid (kubeconform)" "re-run without >/dev/null for detail"
+fi
+
+r=$(dev | yq 'select(.kind=="Deployment" and .metadata.name=="app").spec.replicas')
+[ "$r" = "1" ] && ok "app replicas in dev = 1" || bad "app replicas in dev = 1" "got: $r"
+
+r=$(prod | yq 'select(.kind=="Deployment" and .metadata.name=="app").spec.replicas')
+[ "$r" = "2" ] && ok "app replicas in prod = 2 (strategic-merge patch applied)" || bad "app replicas in prod = 2" "got: $r"
+
+n=$(prod | yq -N 'select(.metadata.labels["platform.example.com/class"] != "prod") | .kind + "/" + .metadata.name' | grep -c .)
+[ "$n" -eq 0 ] && ok "class=prod label on every prod resource (taxonomy universal)" \
+               || bad "class=prod label on every prod resource" "missing on $n resource(s)"
+
+n=$(prod | yq -N 'select(.kind=="Deployment" and .metadata.labels["app.kubernetes.io/name"] == null) | .metadata.name' | grep -c .)
+[ "$n" -eq 0 ] && ok "standard labels on every Deployment" || bad "standard labels on every Deployment" "$n missing"
+
+a=$(dev | yq -N 'select(.kind=="Deployment" and .metadata.name=="app").spec.template.metadata.annotations["platform.example.com/managed-by"]')
+[ "$a" = "kustomize" ] && ok "dev JSON6902 patch applied (managed-by annotation)" || bad "dev JSON6902 patch applied" "got: $a"
+
+cfg=$(prod | yq -N 'select(.kind=="ConfigMap") | .metadata.name' | head -1)
+case "$cfg" in
+  app-config-*) ok "generated ConfigMap carries content hash ($cfg)";;
+  *)            bad "generated ConfigMap carries content hash" "got: $cfg";;
+esac
+
+ref=$(prod | yq -N 'select(.kind=="Deployment" and .metadata.name=="app") | .spec.template.spec.containers[0].env[0].valueFrom.configMapKeyRef.name')
+[ "$ref" = "$cfg" ] && ok "configMapKeyRef rewritten to the hashed name (cross-folder wiring works)" \
+                    || bad "configMapKeyRef rewritten to the hashed name" "ref=$ref cfg=$cfg"
+
+echo
+echo "checkpoint-02: $pass passed, $fail failed"
+[ "$fail" -eq 0 ]

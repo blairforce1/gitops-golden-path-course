@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Stage 08 checkpoint: ordering declared, standards applied in git and validated on rendered output.
+# Every line is PASS/FAIL + what it means; exits non-zero if anything failed.
+set -uo pipefail
+
+pass=0; fail=0
+ok()  { echo "PASS  $1"; pass=$((pass+1)); }
+bad() { echo "FAIL  $1${2:+  [$2]}"; fail=$((fail+1)); }
+
+echo "== checkpoint-08: paired controls =="
+
+for f in clusters/platform/local-01/resources/app-dev.kustomization.yaml \
+         clusters/dev/dev-01/resources/app-dev.kustomization.yaml \
+         clusters/prod/prod-01/resources/app-prod.kustomization.yaml; do
+  n=$(yq '.spec.dependsOn | length' "$f" 2>/dev/null)
+  [ "${n:-0}" -ge 2 ] && ok "${f#clusters/}: dependsOn declared (apps stand on infrastructure + secrets)" \
+    || bad "${f#clusters/}: dependsOn declared" "got ${n:-0} entries"
+done
+
+for o in dev prod; do
+  nonroot=$(kustomize build "apps/overlays/$o" 2>/dev/null | \
+    yq 'select(.kind=="Deployment" and .metadata.name=="app") | .spec.template.spec.securityContext.runAsNonRoot')
+  [ "$nonroot" = "true" ] && ok "$o render carries the baseline (component applied in git)" \
+    || bad "$o render carries the baseline" "runAsNonRoot: ${nonroot:-absent} - component not wired into the overlay?"
+
+done
+
+./scripts/policy-gate >/dev/null 2>&1 \
+  && ok "policy-gate passes (the gate half of the pair - the same file CI runs)" \
+  || bad "policy-gate passes" "run ./scripts/policy-gate for the deny messages"
+
+sc=$(kubectl --context kind-ggp-local-01 -n ggp get pod -l app=app \
+  -o jsonpath='{.items[0].spec.containers[0].securityContext.readOnlyRootFilesystem}' 2>/dev/null)
+[ "$sc" = "true" ] && ok "baseline is live on the running pod (applied in git, real in the cluster)" \
+  || bad "baseline is live on the running pod" "got: ${sc:-absent}"
+
+for c in kind-ggp-local-01:app-dev kind-ggp-dev-01:app-dev kind-ggp-prod-01:app-prod; do
+  ctx=${c%%:*}
+  st=$(kubectl --context "$ctx" -n ggp get deploy app \
+    -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+  [ "$st" = "True" ] && ok "$ctx: app Available under the baseline" \
+    || bad "$ctx: app Available under the baseline" "got: ${st:-absent} - a hardening wound this workload actually has? see step 3's escape hatch"
+done
+
+[ -f .github/workflows/verify.yaml ] && ok "CI workflow exists (pre-merge gate: CI judges the diff)" \
+  || bad "CI workflow exists"
+
+echo
+echo "checkpoint-08: $pass passed, $fail failed"
+[ "$fail" -eq 0 ]

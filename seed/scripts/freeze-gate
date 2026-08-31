@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# Is this change trying to land inside a customer's change freeze?
+#
+# A freeze is a MERGE-TIME control, not a runtime one. The naive implementation -
+# `flux suspend kustomization` - stops the reconciler, and the CR's own API doc says what
+# that means: "suspend subsequent kustomize executions". ALL of them, including drift
+# correction. So a suspended stamp no longer repairs a hand-edited Deployment, which makes
+# the freeze window the least safe window of the year. It also never expires, blocks the
+# emergency fix you actually need, and leaves no record of who froze what or why.
+#
+# What a customer freeze actually wants is narrower: do not put NEW VERSIONS into my
+# production between these dates. That is a question about which commits may merge, so it
+# is answered where merges are decided - in a required check, against a calendar in git.
+# Expiry is then structural rather than remembered: the window has an end date.
+#
+# Usage: freeze-gate [base-ref] [head-ref]   judge a change (default origin/main...HEAD)
+#        freeze-gate --calendar              what is frozen now, and what is coming
+#        freeze-gate --at <YYYY-MM-DD> ...   evaluate as of a date, for planning and tests
+#
+# Override: a `Freeze-override: <reason>` trailer on any commit in the range. Deliberately
+# possible and deliberately loud - a freeze nobody can override is one people bypass by
+# turning the check off, which is worse than an override with a reason attached to it.
+set -uo pipefail
+
+CAL="${FREEZE_CALENDAR:-freezes.yaml}"
+MODE="judge"; AT=""; BASE=""; HEAD_REF=""; WARN_DAYS="${FREEZE_WARN_DAYS:-7}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --calendar) MODE="calendar"; shift ;;
+    --at)       AT="${2:?--at <YYYY-MM-DD>}"; shift 2 ;;
+    -*)         echo "usage: freeze-gate [--calendar] [--at <YYYY-MM-DD>] [base-ref] [head-ref]"; exit 2 ;;
+    *)          if [ -z "$BASE" ]; then BASE="$1"; else HEAD_REF="$1"; fi; shift ;;
+  esac
+done
+BASE="${BASE:-origin/main}"; HEAD_REF="${HEAD_REF:-HEAD}"
+
+[ -f "$CAL" ] || { echo "OK  no $CAL in this repo - nothing is frozen"; exit 0; }
+command -v yq >/dev/null || { echo "FAIL  yq is required to read $CAL  [see stage 00]"; exit 2; }
+
+files=""; trailers=""
+if [ "$MODE" = judge ]; then
+  files=$(git diff --name-only "$BASE" "$HEAD_REF" 2>/dev/null)
+  trailers=$(git log --format='%(trailers:key=Freeze-override,valueonly)' "$BASE..$HEAD_REF" 2>/dev/null | grep -v '^[[:space:]]*$' || true)
+fi
+
+yq -o=json '.' "$CAL" \
+| MODE="$MODE" AT="$AT" FILES="$files" TRAILERS="$trailers" WARN_DAYS="$WARN_DAYS" CAL="$CAL" python3 -c '
+import json, os, sys, datetime
+
+mode = os.environ["MODE"]; cal = os.environ["CAL"]
+warn = int(os.environ["WARN_DAYS"])
+files = [f for f in os.environ["FILES"].splitlines() if f]
+overrides = [t for t in os.environ["TRAILERS"].splitlines() if t.strip()]
+
+def parse(v, end):
+    # A bare date means the whole day, in UTC. Stated rather than assumed, because a
+    # freeze that ends at midnight in the wrong timezone ends on the wrong day.
+    s = str(v)
+    if len(s) == 10:
+        s = s + ("T23:59:59Z" if end else "T00:00:00Z")
+    return datetime.datetime.strptime(s.replace("Z", "+0000"), "%Y-%m-%dT%H:%M:%S%z")
+
+now = (datetime.datetime.strptime(os.environ["AT"] + "T12:00:00+0000", "%Y-%m-%dT%H:%M:%S%z")
+       if os.environ["AT"] else datetime.datetime.now(datetime.timezone.utc))
+
+try:
+    doc = json.load(sys.stdin) or {}
+except Exception:
+    print("FAIL  %s is not readable YAML" % cal); sys.exit(2)
+
+freezes = []
+for f in (doc.get("freezes") or []):
+    try:
+        freezes.append(dict(f, _from=parse(f["from"], False), _to=parse(f["to"], True)))
+    except Exception as e:
+        print("FAIL  freeze %r has an unusable from/to: %s" % (f.get("id", "<no id>"), e)); sys.exit(2)
+
+def touched(fz):
+    return sorted({p for p in files for s in (fz.get("scope") or []) if p.startswith(s)})
+
+active   = [f for f in freezes if f["_from"] <= now <= f["_to"]]
+upcoming = [f for f in freezes if f["_from"] > now]
+recent   = [f for f in freezes if f["_to"] < now and (now - f["_to"]).days <= 7]
+
+def line(f, when):
+    days = (f["_to"] - now).days if when == "ends" else (f["_from"] - now).days
+    print("  %-22s %s -> %s  (%s in %dd)" % (f.get("id", "?"),
+          f["_from"].strftime("%Y-%m-%d"), f["_to"].strftime("%Y-%m-%d"), when, max(days, 0)))
+    print("    reason   %s" % f.get("reason", "<none given - a freeze with no reason is a habit>"))
+    if f.get("ticket"):  print("    ticket   %s" % f["ticket"])
+    if f.get("contact"): print("    contact  %s" % f["contact"])
+    for s in (f.get("scope") or []): print("    scope    %s" % s)
+
+if mode == "calendar":
+    print("as of       %s" % now.strftime("%Y-%m-%d %H:%M UTC"))
+    print()
+    print("ACTIVE (%d)" % len(active))
+    for f in sorted(active, key=lambda x: x["_to"]): line(f, "ends")
+    if not active: print("  none - nothing is frozen right now")
+    print()
+    print("UPCOMING (%d)" % len(upcoming))
+    for f in sorted(upcoming, key=lambda x: x["_from"])[:10]: line(f, "starts")
+    if not upcoming: print("  none")
+    if recent:
+        print()
+        print("RECENTLY ENDED (%d) - worth a glance: did anything queue up behind it?" % len(recent))
+        for f in sorted(recent, key=lambda x: x["_to"]): line(f, "ended")
+    sys.exit(0)
+
+if not files:
+    print("no changes"); sys.exit(0)
+
+hits = [(f, touched(f)) for f in active]
+hits = [(f, t) for f, t in hits if t]
+
+soon = []
+for f in upcoming:
+    if (f["_from"] - now).days <= warn and touched(f):
+        soon.append(f)
+
+rc = 0
+for f, t in hits:
+    print("FROZEN  %s   %s -> %s" % (f.get("id", "?"), f["_from"].strftime("%Y-%m-%d"), f["_to"].strftime("%Y-%m-%d")))
+    print("  reason   %s" % f.get("reason", "<none>"))
+    if f.get("ticket"):  print("  ticket   %s" % f["ticket"])
+    if f.get("contact"): print("  contact  %s" % f["contact"])
+    print("  this change touches:")
+    for p in t: print("    %s" % p)
+    print()
+    rc = 1
+
+if rc and overrides:
+    print("OVERRIDDEN - a Freeze-override trailer is present on this range:")
+    for o in overrides: print("    %s" % o.strip())
+    print()
+    print("  Allowed, recorded, and visible in the log forever. If this was an emergency,")
+    print("  that is the system working. If it is the third one this month, the freeze is")
+    print("  not being respected and the calendar is fiction.")
+    rc = 0
+elif rc:
+    print("  To proceed anyway, add a trailer to the commit saying why:")
+    print()
+    print("      Freeze-override: <reason, and who agreed to it>")
+    print()
+    print("  Reverting the freeze entry instead is the wrong move: the calendar is the")
+    print("  customer'"'"'s commitment, not your obstacle.")
+
+for f in soon:
+    print("HEADS UP  %s starts in %d day(s) and covers paths this change touches."
+          % (f.get("id", "?"), (f["_from"] - now).days))
+    print("          Land it now or wait it out - do not discover this on the day.")
+
+if rc == 0 and not hits:
+    print("OK  no active freeze covers the paths this change touches")
+sys.exit(rc)
+'

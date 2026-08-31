@@ -1,0 +1,4 @@
+# Enforce LF for all text files, on every platform, regardless of local git config.
+# Shell scripts break outright under CRLF, and golden-file snapshot tests (Act II+)
+# require byte-identical renders. Repo-enforced hygiene beats user-config advice.
+* text=auto eol=lf

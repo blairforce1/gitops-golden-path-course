@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Does the local Flux CLI match the Flux release bundled in AKS's microsoft.flux extension?
+# The Act VIII claim - "AKS absorbs what you built by hand" - is only honest if the local
+# and managed Flux versions agree. Scrapes Microsoft's release notes (newest entry first);
+# a scrape is fragile by nature, so failures WARN rather than block, and the page is the
+# fallback: https://learn.microsoft.com/azure/azure-arc/kubernetes/flux-gitops-release-notes
+set -uo pipefail
+
+NOTES_URL="https://learn.microsoft.com/azure/azure-arc/kubernetes/flux-gitops-release-notes"
+
+local_v=$(flux --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+aks_v=$(curl -sfL -A "Mozilla/5.0" --max-time 20 "$NOTES_URL" \
+  | grep -oE 'Release v[0-9]+\.[0-9]+\.[0-9]+' | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+
+# no local flux is the first-install case, not an error to bail on blind - hand over the pinned command
+if [ -z "$local_v" ]; then
+  echo "FAIL  local flux CLI not found or version unparseable"
+  if [ -n "$aks_v" ]; then
+    echo "      install it pinned to the AKS release: curl -s https://fluxcd.io/install.sh | FLUX_VERSION=$aks_v bash"
+  else
+    echo "      (release-notes scrape also failed - find the version to pin at $NOTES_URL)"
+  fi
+  exit 1
+fi
+
+if [ -z "$aks_v" ]; then
+  echo "WARN  could not scrape the AKS release notes (page moved or offline) - check manually:"
+  echo "      $NOTES_URL   (local flux: v$local_v)"
+  exit 0
+fi
+
+echo "AKS microsoft.flux bundles Flux: v$aks_v   local flux CLI: v$local_v"
+
+if [ "$local_v" = "$aks_v" ]; then
+  echo "PASS  local Flux matches the AKS-supported release exactly"
+elif [ "${local_v%.*}" = "${aks_v%.*}" ]; then
+  echo "PASS  same minor line (v${aks_v%.*}.x) - patch drift only, APIs identical"
+else
+  echo "FAIL  minor-version drift - bootstrap would install controllers AKS doesn't ship"
+  # the pinned flux may already be installed but shadowed - name that before prescribing a reinstall
+  alt=""
+  for p in $(which -a flux 2>/dev/null | sort -u); do
+    v=$("$p" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    [ "$v" = "$aks_v" ] && { alt="$p"; break; }
+  done
+  if [ -n "$alt" ]; then
+    echo "      flux v$aks_v exists at $alt but $(command -v flux) (v$local_v) shadows it - fix PATH order or remove the stale binary"
+  else
+    echo "      pin the CLI to the AKS release: curl -s https://fluxcd.io/install.sh | FLUX_VERSION=$aks_v bash"
+  fi
+  exit 1
+fi

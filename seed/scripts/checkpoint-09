@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Stage 09 checkpoint: the fleet reports to one place - hub sees every cluster, per-CR state is a metric.
+# Every line is PASS/FAIL + what it means; exits non-zero if anything failed.
+# Background-process rule: the hub port-forward gets a readiness loop and an explicit stop.
+set -uo pipefail
+
+pass=0; fail=0
+ok()  { echo "PASS  $1"; pass=$((pass+1)); }
+bad() { echo "FAIL  $1${2:+  [$2]}"; fail=$((fail+1)); }
+
+echo "== checkpoint-09: the fleet on one pane =="
+
+for ctx in kind-ggp-local-01 kind-ggp-dev-01 kind-ggp-prod-01; do
+  for stamp in monitoring monitoring-crs; do
+    st=$(kubectl --context "$ctx" -n flux-system get kustomization "$stamp" \
+      -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+    [ "$st" = "True" ] && ok "$ctx: $stamp stamp Ready" \
+      || bad "$ctx: $stamp stamp Ready" "got: ${st:-absent}${stamp:+ - CRs wait on the stack that owns their CRDs}"
+  done
+done
+
+st=$(kubectl --context kind-ggp-local-01 -n monitoring get deploy kube-prometheus-stack-grafana \
+  -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+[ "$st" = "True" ] && ok "grafana Available on the hub" || bad "grafana Available on the hub" "got: ${st:-absent}"
+
+for ctx in kind-ggp-local-01 kind-ggp-dev-01 kind-ggp-prod-01; do
+  kubectl --context "$ctx" -n monitoring get servicemonitor traefik >/dev/null 2>&1 \
+    && ok "$ctx: ingress SLIs scraped (traefik ServiceMonitor)" \
+    || bad "$ctx: ingress SLIs scraped" "no ServiceMonitor - this cluster's service metrics are dark"
+done
+
+kubectl --context kind-ggp-local-01 -n monitoring get prometheusrule app-slo >/dev/null 2>&1 \
+  && ok "SLO is policy in git (PrometheusRule app-slo on the hub)" \
+  || bad "SLO is policy in git" "app-slo missing - no target, no budget, no gate"
+
+kubectl --context kind-ggp-local-01 -n monitoring port-forward svc/kube-prometheus-stack-prometheus 19090:9090 >/dev/null 2>&1 &
+pf=$!
+for _ in $(seq 1 20); do
+  curl -s -o /dev/null "http://localhost:19090/-/ready" && break
+  sleep 1
+done
+
+q() { curl -s "http://localhost:19090/api/v1/query" --data-urlencode "query=$1"; }
+
+n=$(q 'count(count by (cluster) (up))' | yq -p=json '.data.result[0].value[1] // 0' 2>/dev/null); n=${n%%.*}; n=${n:-0}; [ "$n" = "null" ] && n=0
+[ "${n:-0}" -ge 3 ] && ok "hub sees $n clusters (spokes remote-writing with their cluster label)" \
+  || bad "hub sees all clusters" "got ${n:-0} of 3 - stale HUB_IP in cluster-facts?"
+
+n=$(q 'count(gotk_resource_info)' | yq -p=json '.data.result[0].value[1] // 0' 2>/dev/null); n=${n%%.*}; n=${n:-0}; [ "$n" = "null" ] && n=0
+[ "${n:-0}" -ge 1 ] && ok "per-CR state is a metric (gotk_resource_info: $n series) - 'which stamp, since when' is a query" \
+  || bad "per-CR state is a metric" "customResourceState config not loaded by kube-state-metrics?"
+
+n=$(q 'count(gotk_reconcile_duration_seconds_count)' | yq -p=json '.data.result[0].value[1] // 0' 2>/dev/null); n=${n%%.*}; n=${n:-0}; [ "$n" = "null" ] && n=0
+[ "${n:-0}" -ge 1 ] && ok "flux controllers are scraped (gotk_reconcile_duration_*: $n series) - the dashboard's other half" \
+  || bad "flux controllers are scraped" "PodMonitor missing or not labeled release=kube-prometheus-stack - unlabeled monitors are ignored silently"
+
+loaded=$(curl -s "http://localhost:19090/api/v1/rules" | yq -p=json '[.data.groups[].name] | contains(["app-slo"])' 2>/dev/null)
+[ "$loaded" = "true" ] && ok "hub evaluates the SLO rules (slo:* recordings + fast-burn alert)" \
+  || bad "hub evaluates the SLO rules" "PrometheusRule present but not selected? check the release label"
+
+kill "$pf" 2>/dev/null; wait "$pf" 2>/dev/null
+
+n=$(kubectl --context kind-ggp-local-01 -n monitoring get configmap -l grafana_dashboard=1 -o name 2>/dev/null | wc -l)
+[ "${n:-0}" -ge 1 ] && ok "dashboard configmaps present for the sidecar ($n)" \
+  || bad "dashboard configmaps present for the sidecar"
+
+echo
+echo "checkpoint-09: $pass passed, $fail failed"
+[ "$fail" -eq 0 ]

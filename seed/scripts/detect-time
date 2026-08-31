@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# How long from "someone broke prod" to "the fleet view knew" - measured from artifacts.
+#
+# The answer is a metric sample timestamp: kube-state-metrics reads the stamp's Ready
+# condition into gotk_resource_info on the hub, so "when did we know" is a query, not a
+# stopwatch and not a memory. What it prints is the state timeline either side of the
+# break, which is the same thing your eyes do on the Grafana panel - one line per change.
+#
+# Deliberately NOT the commit status: a status is a snapshot one reconcile chose to post
+# (drill 2 met one that was green about a revision the cluster had not applied). The
+# metric is a continuous sample of the CR itself. Detection is a metric question;
+# attribution is a status question. This script answers the first.
+#
+# Usage: detect-time <stamp> <kube-context> [break-commit-subject] [window]
+#   e.g. detect-time app-prod kind-ggp-prod-01
+#
+# The subject argument is optional because the commit convention made it derivable: a
+# break against this stamp has the subject prefix "break(<stamp>): ", so naming the stamp
+# already selects the commit. Pass a subject only to disambiguate several breaks against
+# the same stamp - it is matched as a prefix either way.
+set -uo pipefail
+
+STAMP="${1:?usage: detect-time <stamp> <kube-context> [break-commit-subject] [window]}"
+KCTX="${2:?kube context the stamp runs on, e.g. kind-ggp-prod-01}"
+SUBJECT="${3:-break($STAMP): }"          # derived from the grammar; override to disambiguate
+WINDOW="${4:-30m}"                       # how long AFTER the break to look
+PORT="${DETECT_TIME_PORT:-19097}"
+STEP=15                                  # resolution of the answer, in seconds
+SUSTAIN="${DETECT_TIME_SUSTAIN:-60}"     # a not-Ready shorter than this is the cascade, not a break
+
+secs() { case "$1" in *h) echo $(( ${1%h} * 3600 ));; *m) echo $(( ${1%m} * 60 ));; *s) echo "${1%s}";; *) echo "$1";; esac; }
+
+# Find the break by its subject, never by HEAD - drill 2's lesson. Matched as a PREFIX of
+# the subject field, anchored at the start by construction. That anchoring is the whole
+# trick: `git revert` writes Revert "<subject>", so the subject it undoes sits inside the
+# line rather than at the start of it - a substring search finds the revert (newer, and
+# the opposite event); a prefix match cannot. awk and not grep, so no grep.patternType
+# setting can reinterpret the parentheses.
+SHA=$(git log --max-count=500 --format='%H%x09%s' \
+      | awk -F'\t' -v m="$SUBJECT" 'index($2, m) == 1 { print $1; exit }')
+[ -n "$SHA" ] || { echo "FAIL  no commit whose subject starts with '$SUBJECT'  [pushed? right branch?]"; exit 1; }
+t0=$(git log -1 --format=%ct "$SHA")
+
+kubectl --context kind-ggp-local-01 -n monitoring port-forward svc/kube-prometheus-stack-prometheus \
+  "$PORT:9090" >/dev/null 2>&1 &
+PF=$!
+trap 'kill "$PF" 2>/dev/null; wait "$PF" 2>/dev/null' EXIT
+for _ in $(seq 1 20); do curl -s -o /dev/null "http://localhost:$PORT/-/ready" && break; sleep 1; done
+curl -s -o /dev/null --max-time 5 "http://localhost:$PORT/-/ready" \
+  || { echo "FAIL  hub reachable  [is the platform cluster up and the monitoring stamp Ready?]"; exit 1; }
+
+t_end=$(( t0 + $(secs "$WINDOW") )); now=$(date +%s); [ "$t_end" -gt "$now" ] && t_end=$now
+
+spec=$(kubectl --context "$KCTX" -n flux-system get kustomization "$STAMP" \
+  -o jsonpath='{.spec.interval}{" "}{.spec.timeout}' 2>/dev/null)
+interval=${spec%% *}; timeout=${spec##* }
+[ -n "${timeout// }" ] || timeout="unset (defaults to the interval)"
+
+# Two minutes of "before" so the healthy state it broke FROM is on screen too.
+curl -s --max-time 20 "http://localhost:$PORT/api/v1/query_range" \
+  --data-urlencode "query=gotk_resource_info{name=\"$STAMP\"}" \
+  --data-urlencode "start=$(( t0 - 120 ))" --data-urlencode "end=$t_end" \
+  --data-urlencode "step=$STEP" \
+| SHA="${SHA:0:7}" SUBJECT="$SUBJECT" T0="$t0" STAMP="$STAMP" KCTX="$KCTX" \
+  INTERVAL="$interval" TIMEOUT="$timeout" WINDOW="$WINDOW" STEP="$STEP" \
+  T_END="$t_end" SUSTAIN="$SUSTAIN" python3 -c '
+import json, os, sys, datetime
+from collections import defaultdict
+
+t0 = int(os.environ["T0"]); stamp = os.environ["STAMP"]
+try:
+    result = json.load(sys.stdin)["data"]["result"]
+except Exception:
+    print("FAIL  the hub returned no readable answer  [is Prometheus up?]"); sys.exit(2)
+
+# One row per sample time, holding whatever ready= values existed then. Collapsing the
+# other labels is the point: we want WHEN the state changed, not which revision it named.
+at = defaultdict(set)
+for series in result:
+    ready = series["metric"].get("ready", "?")
+    for ts, _ in series["values"]:
+        at[int(float(ts))].add(ready)
+
+hhmmss = lambda ts: datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S")
+print()
+print("break commit   %s  \"%s\"" % (os.environ["SHA"], os.environ["SUBJECT"]))
+if not at:
+    print("               pushed at %s\n" % hhmmss(t0))
+    print("FAIL  no gotk_resource_info for %s on the hub at all." % stamp)
+    print("      Check the monitoring stamps are Ready fleet-wide: ./scripts/checkpoint-09")
+    sys.exit(1)
+
+before = [s for ts, s in sorted(at.items()) if ts <= t0]
+was = ",".join(sorted(before[-1])) if before else "unseen"
+print("               pushed at %s - %s was ready=%s" % (hhmmss(t0), stamp, was))
+if was != "True":
+    print("\nWARNING  %s was not green when the break landed. Everything below is about a" % stamp)
+    print("         failure that was already there, not the one you just caused.")
+
+print("\nwhat the hub saw (gotk_resource_info, %ss resolution):\n" % os.environ["STEP"])
+
+# Collapse samples into segments: the question is never "what was the value at 13:22:10",
+# it is "how long did it stay that way".
+segments, prev = [], None
+for ts in sorted(at):
+    state = ",".join(sorted(at[ts]))
+    if state != prev:
+        segments.append([ts, state])
+        prev = state
+t_end = int(os.environ["T_END"])
+for i, seg in enumerate(segments):
+    seg.append(segments[i + 1][0] if i + 1 < len(segments) else t_end)
+
+sustain = int(os.environ["SUSTAIN"])
+left_ready = confirmed = None
+for start, state, end in segments:
+    if start <= t0 or state == "True" or end - start < sustain:
+        continue
+    if left_ready is None:
+        left_ready = start
+    if "False" in state:
+        confirmed = start
+        break
+
+for start, state, end in segments:
+    delta = "" if start <= t0 else "+%ds" % (start - t0)
+    note = ""
+    if start > t0 and state != "True" and end - start < sustain:
+        note = "   transient (%ds) - the dependency cascade, not your break" % (end - start)
+    elif start == left_ready:
+        note = "   <- left Ready: the dashboard can see something is wrong"
+    elif start == confirmed:
+        note = "   <- confirmed red: the stamp gave up"
+    elif start > t0 and state == "True" and confirmed and start > confirmed:
+        note = "   recovered"
+    print(("  %s  %7s   ready=%-8s%s" % (hhmmss(start), delta, state, note)).rstrip())
+
+print()
+if left_ready is None:
+    print("nothing but transient flicker within %s of the break." % os.environ["WINDOW"])
+    print("Either the stamp is still waiting out its timeout (%s) - re-run in a minute -" % os.environ["TIMEOUT"])
+    print("or detection took longer than the window; widen it with a 4th argument, e.g. 2h.")
+    sys.exit(1)
+
+print("break -> left Ready:    %4ds" % (left_ready - t0))
+if confirmed:
+    print("break -> confirmed red: %4ds   (%ds of that spent waiting out timeout %s)"
+          % (confirmed - t0, confirmed - left_ready, os.environ["TIMEOUT"]))
+else:
+    print("break -> confirmed red:    -   (not yet - still inside timeout %s)" % os.environ["TIMEOUT"])
+print()
+print("  %s on %s: interval %s, timeout %s." % (stamp, os.environ["KCTX"], os.environ["INTERVAL"], os.environ["TIMEOUT"]))
+print("  Transient rows above are real and expected: a stamp waiting on its dependsOn reports")
+print("  Ready=False, so every push reds the dependent fleet for one retry. Duration, not")
+print("  colour, separates ordering from failure - and it is why an alert on this metric")
+print("  needs a `for:` window. Why it failed is a different tool:")
+print("  flux events --context %s --for Kustomization/%s" % (os.environ["KCTX"], stamp))
+'

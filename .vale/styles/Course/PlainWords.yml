@@ -1,0 +1,14 @@
+extends: substitution
+message: "Plain word: use '%s' instead of '%s'."
+level: warning
+ignorecase: true
+swap:
+  utilize: use
+  utilise: use
+  leverage (?:the|a|an|this|it)?: use
+  facilitate: help
+  numerous: many
+  'in order to': to
+  'due to the fact that': because
+  'it is important to note that': (delete)
+  degenerate: boring, or collapsed

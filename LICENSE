@@ -1,0 +1,12 @@
+This repository is dual-licensed, split by what a file is:
+
+- Code - scripts/, tools/, skills/, .github/, env.sh, and every command in a
+  paste block: the MIT License, in LICENSE-code.
+- Course text - every .md file (the walkthrough, rules, appendices, decision
+  records): Creative Commons Attribution-ShareAlike 4.0 International, in
+  LICENSE-docs.
+
+Each license governs only the files described above; the MIT license's
+"associated documentation files" clause does not extend it to the course text.
+
+Copyright (c) 2026 blairforce1 <git@blairforce1.com>

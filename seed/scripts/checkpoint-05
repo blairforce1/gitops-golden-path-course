@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Stage 05 checkpoint: third-party software as a pinned, declarative dependency.
+# Every line is PASS/FAIL + what it means; exits non-zero if anything failed.
+set -uo pipefail
+
+CTX="${CTX:-kind-ggp-local-01}"
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)   # derived - no identity stored
+pass=0; fail=0
+ok()  { echo "PASS  $1"; pass=$((pass+1)); }
+bad() { echo "FAIL  $1${2:+  [$2]}"; fail=$((fail+1)); }
+
+echo "== checkpoint-05: helm via flux =="
+
+st=$(kubectl --context "$CTX" -n traefik get helmrepository traefik \
+  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+[ "$st" = "True" ] && ok "HelmRepository traefik Ready (source-controller caches charts like git)" \
+  || bad "HelmRepository traefik Ready" "got: ${st:-absent}"
+
+st=$(kubectl --context "$CTX" -n traefik get helmrelease traefik \
+  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+[ "$st" = "True" ] && ok "HelmRelease traefik Ready (helm-controller reconciled the pin)" \
+  || bad "HelmRelease traefik Ready" "got: ${st:-absent}"
+
+want=$(yq '.spec.chart.spec.version' infrastructure/traefik/resources/traefik.helmrelease.yaml 2>/dev/null)
+got=$(kubectl --context "$CTX" -n traefik get helmrelease traefik \
+  -o jsonpath='{.status.history[0].chartVersion}' 2>/dev/null)
+[ -n "$want" ] && [ "$got" = "$want" ] \
+  && ok "deployed chart version = git pin ($want) - upgrades are diffs" \
+  || bad "deployed chart version = git pin" "git: ${want:-?} cluster: ${got:-?}"
+
+st=$(kubectl --context "$CTX" -n flux-system get kustomization infrastructure \
+  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+[ "$st" = "True" ] && ok "kustomization infrastructure Ready (the tree has its own stamp)" \
+  || bad "kustomization infrastructure Ready" "got: ${st:-absent}"
+
+kubectl --context "$CTX" -n flux-system get alert infrastructure-status >/dev/null 2>&1 \
+  && ok "Alert covers the infrastructure stamp (allowlist lesson applied)" \
+  || bad "Alert covers the infrastructure stamp" "eventSources is an allowlist - absent means silent failures"
+
+# /healthz because the app has no root route - a 404 here would be the app answering, not a broken ingress
+code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${HTTP_PORT:-8080}/healthz" 2>/dev/null)
+case "$code" in
+  2*) ok "app answers through the ingress (/healthz -> $code, no port-forward)";;
+  404) bad "app answers through the ingress" "HTTP 404 - traefik answered but nothing matched: Ingress missing or class mismatch (kubectl -n ggp get ingress), or the app lacks the path";;
+  *) bad "app answers through the ingress" "got HTTP ${code:-nothing} - nothing listening on the host port: old cluster without port mappings? rebuild via stage 05 step 1";;
+esac
+
+rev=$(kubectl --context "$CTX" -n flux-system get kustomization infrastructure -o jsonpath='{.status.lastAppliedRevision}' 2>/dev/null)
+sha=${rev##*:}
+if [ -n "$sha" ]; then
+  n=$(gh api "repos/$REPO/commits/$sha/status" --jq '[.statuses[] | select(.state=="success")] | length' 2>/dev/null)
+  [ "${n:-0}" -ge 2 ] && ok "reconciled revision (${sha:0:7}) wears multiple green contexts (verdict per stamp)" \
+    || bad "reconciled revision wears multiple green contexts" "got ${n:-0} - infrastructure alert missing or not yet fired"
+else
+  bad "reconciled revision known" "infrastructure has no lastAppliedRevision"
+fi
+
+echo
+echo "checkpoint-05: $pass passed, $fail failed"
+[ "$fail" -eq 0 ]

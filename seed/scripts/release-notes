@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# Release notes for ONE CLUSTER, from what that cluster says it is running.
+#
+# The premise: a fleet has no single "release". Three clusters share one repo and each is
+# at its own revision, so "what shipped" is only ever a question about a cluster. Flux
+# already records the answer - a stamp's .status.lastAppliedRevision is the commit that
+# cluster actually applied - which makes the range a query rather than a tagging ceremony.
+# No tags, no release branches, no changelog file to keep honest.
+#
+# Two views, and the difference is why merge-commit-only matters:
+#   --first-parent  one line per PR      - what shipped, as reviewed
+#   (default)       every commit         - what changed, as authored
+#
+# Usage: release-notes <stamp> <kube-context> [since] [--first-parent] [--record]
+#   since: a git revision, or <stamp>@<kube-context> to diff two rungs (the promotion gap)
+#          default: the revision recorded by the last --record run, else the root commit
+#   e.g. release-notes app-prod kind-ggp-prod-01
+#        release-notes app-prod kind-ggp-prod-01 app-dev@kind-ggp-dev-01   # what dev has that prod hasn't
+set -uo pipefail
+
+CLIFF="${CLIFF_IMAGE:-docker.io/orhunp/git-cliff:2.13.1}"
+
+STAMP="${1:?usage: release-notes <stamp> <kube-context> [since] [--first-parent] [--record]}"
+KCTX="${2:?kube context the stamp runs on, e.g. kind-ggp-prod-01}"
+shift 2
+SINCE=''; FP=''; RECORD=''
+for a in "$@"; do
+  case "$a" in
+    --first-parent) FP='--first-parent' ;;
+    --record)       RECORD=1 ;;
+    -*)             echo "FAIL  unknown flag $a"; exit 2 ;;
+    *)              SINCE="$a" ;;
+  esac
+done
+
+# What the cluster says it is running. Flux writes "<branch>@sha1:<full-sha>"; take the sha.
+revision_of() {
+  kubectl --context "$2" -n flux-system get kustomization "$1" \
+    -o jsonpath='{.status.lastAppliedRevision}' 2>/dev/null | sed 's/.*sha1://'
+}
+
+TO=$(revision_of "$STAMP" "$KCTX")
+[ -n "$TO" ] || { echo "FAIL  $STAMP on $KCTX reports no lastAppliedRevision  [stamp exists? ever reconciled?]"; exit 1; }
+git cat-file -e "$TO^{commit}" 2>/dev/null \
+  || { echo "FAIL  $KCTX is running $TO, which is not in this clone  [git fetch? history rewritten?]"; exit 1; }
+
+STATE=".release-notes/${KCTX}.${STAMP}"
+case "$SINCE" in
+  '')      FROM=$( [ -f "$STATE" ] && cat "$STATE" || git rev-list --max-parents=0 HEAD | tail -1 ) ;;
+  *@*)     FROM=$(revision_of "${SINCE%@*}" "${SINCE#*@}")
+           [ -n "$FROM" ] || { echo "FAIL  $SINCE reports no lastAppliedRevision"; exit 1; } ;;
+  *)       FROM=$(git rev-parse "$SINCE^{commit}" 2>/dev/null) \
+             || { echo "FAIL  '$SINCE' is not a revision in this repo"; exit 1; } ;;
+esac
+
+# Which paths render to THIS cluster. The stamp knows its own: spec.path. Everything that
+# path *includes* reaches it too, which is why base and components are in the set - a base
+# edit ships to every cluster with no promotion, and a release note that hides that is
+# worse than none. This is an approximation, deliberately named as one: the exact test is
+# whether the RENDER changed (stage 12), and computing the true dependency set from a
+# kustomization graph is the job the bespoke tool in this stage's last section exists for.
+SPEC_PATH=$(kubectl --context "$KCTX" -n flux-system get kustomization "$STAMP" \
+              -o jsonpath='{.spec.path}' 2>/dev/null | sed 's|^\./||')
+PATHS=("$SPEC_PATH" apps/base apps/components)
+
+printf 'cluster        %s\n' "$KCTX"
+printf 'stamp          %s   (renders %s)\n' "$STAMP" "${SPEC_PATH:-<unknown>}"
+printf 'running        %s   %s\n' "${TO:0:7}" "$(git log -1 --format=%cI "$TO")"
+printf 'since          %s   %s\n' "${FROM:0:7}" "$(git log -1 --format=%cI "$FROM")"
+printf 'view           %s\n' "$([ -n "$FP" ] && echo 'per PR (--first-parent)' || echo 'per commit')"
+echo
+
+if [ "$FROM" = "$TO" ]; then
+  echo "nothing to report - this cluster is already at the reference revision"
+  exit 0
+fi
+
+RANGE="$FROM..$TO"
+TOTAL=$(git log $FP --format=%H "$RANGE" | wc -l)
+mapfile -t SHAS < <(git log $FP --format=%H "$RANGE" -- "${PATHS[@]}")
+
+if [ ${#SHAS[@]} -eq 0 ]; then
+  echo "no commits in $RANGE touched anything this cluster renders"
+  echo "(the fleet moved; this cluster's inputs did not - reconcile scope is the repo,"
+  echo " change scope is the paths a commit touched)"
+  exit 0
+fi
+
+printf 'commits        %d of %d in the range touch this cluster'"'"'s inputs\n\n' "${#SHAS[@]}" "$TOTAL"
+
+if [ -n "$FP" ]; then
+  # git-cliff has no --first-parent, so the PR-level view is plain git log. Nothing is
+  # lost: at PR granularity the merge subject IS the release note, which is the whole
+  # reason merge_commit_title=PR_TITLE is set (appendices/git-policy.md).
+  git log --first-parent --format='- %s (%h)' "$RANGE" -- "${PATHS[@]}"
+  exit 0
+fi
+
+INC=()
+for p in "${PATHS[@]}"; do [ -n "$p" ] && INC+=(--include-path "$p/**"); done
+
+# git-cliff runs as a pinned container (tool-provisioning rule: a pure function over the
+# repo). Three flags earn their place, each found the hard way:
+#   :ro,z            a filter reads, and SELinux hosts deny unlabeled mounts
+#   safe.directory   the repo is owned by a uid the container does not have; without this
+#                    git refuses to read it, complaining about dubious ownership
+#   --tmpfs          git-cliff caches changed-files under .git/git-cliff-core, which a
+#                    read-only mount denies. A tmpfs layered over exactly that path keeps
+#                    the repo read-only and gives the cache somewhere to live.
+docker run --rm -v "$PWD:/app:ro,z" --tmpfs /app/.git/git-cliff-core -w /app \
+  -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/app \
+  "$CLIFF" --config cliff.toml "${INC[@]}" "$RANGE" \
+  || { echo "(git-cliff unavailable - plain log)"; git log --format='- %s (%h)' "$RANGE" -- "${PATHS[@]}"; }
+
+if [ -n "$RECORD" ]; then
+  mkdir -p .release-notes && printf '%s\n' "$TO" > "$STATE"
+  echo
+  echo "recorded  $STATE -> ${TO:0:7}   (next run reports from here)"
+fi

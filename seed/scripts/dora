@@ -1,0 +1,465 @@
+#!/usr/bin/env bash
+# The four DORA metrics for a GitOps fleet - computed from artifacts, never self-reported.
+#
+# DORA measures PRODUCTION. All four definitions say so: how often you release to
+# production, how long a commit takes to reach production, how often a production change
+# fails, how long production takes to recover. So production is the default scope here and
+# every other rung is a diagnostic, printed only on request and labelled as not-DORA -
+# because a dev deployment frequency in the same table is a number someone will quote.
+#
+# And the UNIT IS THE CHANGE, not the application of the change. One commit reaching fifty
+# tenants is one deployment, not fifty; a commit that breaks fifty tenants is one failed
+# change. Counting per-tenant applications makes deployment frequency scale with customer
+# count - add a customer and look more elite - which is the same class of error as counting
+# reconciles instead of changes, one level up.
+#
+# Two signals, because one of them lies. On the hub:
+#   gotk_resource_info{name,cluster,revision,ready}                      the STAMP
+#   kube_deployment_metadata_generation{cluster,namespace,deployment}    the WORKLOAD
+# A stamp reconciles every commit, so its revision changes on every push - including
+# pushes that changed nothing it renders. The workload's generation increments only when
+# the spec actually changed, so that is a deployment. Both are printed; the gap is the
+# lesson (stage 10).
+#
+#   deployment frequency  distinct changes reaching production, per day
+#   lead time             commit authored -> FIRST arrival on the production rung.
+#                         DORA lead time measures the FEEDBACK LOOP: how long before a
+#                         developer learns whether the change was any good. That signal
+#                         arrives with the first production tenant serving real traffic;
+#                         the fiftieth tells the developer nothing new, and waiting for it
+#                         mixes customer change-freeze calendars into a metric about
+#                         delivery capability.
+#   convergence           first production arrival -> last. A SEPARATE number, because
+#                         "when is everyone safe" is a real question and is not this one.
+#   change failure rate   failed changes / changes
+#   time to restore       per INCIDENT, ending when the last affected tenant recovered
+#
+# Production is the LAST RUNG of the ladder, not a cluster name - --production selects it.
+#
+# Usage: dora [--window 30d] [--production <cluster-regex>] [--by tenant|cluster|stamp] [--rungs] [--stages]
+#   e.g. dora --window 30d                 the four numbers
+#        dora --window 30d --by tenant     which customer is dragging them
+#        dora --window 30d --rungs         the non-production rungs, as diagnostics
+#        dora --window 30d --stages        where the lead time actually goes (needs gh)
+set -uo pipefail
+
+WINDOW="30d"; PROD="prod-.*"; BY=""; RUNGS=0; STAGES=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --window)     WINDOW="${2:?--window 30d}"; shift 2 ;;
+    --production) PROD="${2:?--production <cluster-regex>}"; shift 2 ;;
+    --by)         BY="${2:?--by tenant|cluster|stamp}"; shift 2 ;;
+    --rungs)      RUNGS=1; shift ;;
+    --stages)     STAGES=1; shift ;;
+    *) echo "usage: dora [--window 30d] [--production <cluster-regex>] [--by tenant|cluster|stamp] [--rungs] [--stages]"; exit 2 ;;
+  esac
+done
+case "${BY:-tenant}" in tenant|cluster|stamp) ;; *) echo "FAIL  --by must be tenant|cluster|stamp"; exit 2 ;; esac
+
+PORT="${DORA_PORT:-19098}"
+STEP="${DORA_STEP:-60}"                  # sample resolution, seconds
+SUSTAIN="${DORA_SUSTAIN:-90}"            # a not-Ready shorter than this is the dependency
+                                         # cascade, not a failed deployment (see stage 10)
+secs() { case "$1" in *d) echo $(( ${1%d} * 86400 ));; *h) echo $(( ${1%h} * 3600 ));; *m) echo $(( ${1%m} * 60 ));; *) echo "${1%s}";; esac; }
+
+kubectl --context kind-ggp-local-01 -n monitoring port-forward svc/kube-prometheus-stack-prometheus \
+  "$PORT:9090" >/dev/null 2>&1 &
+PF=$!
+for _ in $(seq 1 20); do curl -s -o /dev/null "http://localhost:$PORT/-/ready" && break; sleep 1; done
+curl -s -o /dev/null --max-time 5 "http://localhost:$PORT/-/ready" \
+  || { echo "FAIL  hub reachable  [is the platform cluster up and the monitoring stamp Ready?]"; exit 1; }
+
+end=$(date +%s); start=$(( end - $(secs "$WINDOW") ))
+
+# Prometheus refuses more than 11,000 points per series, so the step follows the window
+# rather than the other way round. Consequence worth knowing: a coarse step cannot see a
+# deployment that lived less time than one sample, and cannot judge a failure shorter than
+# SUSTAIN. The script says so rather than quietly reporting a smaller number.
+span=$(( end - start ))
+min_step=$(( (span / 10000) + 1 ))
+[ "$min_step" -gt "$STEP" ] && STEP=$min_step
+
+commits=$(git log --since="@$start" --format='%H %ct %s' 2>/dev/null)
+
+fetch() {
+  curl -s --max-time 60 "http://localhost:$PORT/api/v1/query_range" \
+    --data-urlencode "query=$1" \
+    --data-urlencode "start=$start" --data-urlencode "end=$end" --data-urlencode "step=$STEP"
+}
+
+# Answers go to files, not the environment: a fleet-week of samples is megabytes and an env
+# var that size dies with "Argument list too long" - a confusing way to fail.
+TMP=$(mktemp -d); trap 'kill "$PF" 2>/dev/null; wait "$PF" 2>/dev/null; rm -rf "$TMP"' EXIT
+fetch 'gotk_resource_info{customresource_kind="Kustomization"}' > "$TMP/stamps.json"
+fetch 'kube_deployment_metadata_generation'                     > "$TMP/workloads.json"
+printf '%s\n' "$commits" > "$TMP/commits.txt"
+# Promotion PRs, for the stage breakdown. The whole history, not the window: a change can
+# be committed long before it is promoted, which is precisely the interval being measured.
+echo "[]" > "$TMP/prs.json"
+if [ "$STAGES" = 1 ]; then
+  gh pr list --state merged --limit 200 \
+    --json number,title,createdAt,mergedAt,mergeCommit,reviews > "$TMP/prs.json" 2>/dev/null \
+    || echo "[]" > "$TMP/prs.json"
+fi
+
+WINDOW="$WINDOW" SUSTAIN="$SUSTAIN" STEP="$STEP" TMP="$TMP" PROD="$PROD" BY="$BY" RUNGS="$RUNGS" STAGES="$STAGES" \
+START="$start" END="$end" python3 -c '
+import json, os, re, sys, datetime
+from collections import defaultdict
+
+tmp     = os.environ["TMP"]
+sustain = int(os.environ["SUSTAIN"]); step = int(os.environ["STEP"])
+start   = int(os.environ["START"]);   end  = int(os.environ["END"])
+prod_re = re.compile("^(" + os.environ["PROD"] + ")$")
+by      = os.environ["BY"]; rungs = os.environ["RUNGS"] == "1"
+stages  = os.environ["STAGES"] == "1"
+
+commit_time, commit_subject = {}, {}
+for line in open(tmp + "/commits.txt"):
+    f = line.rstrip("\n").split(" ", 2)
+    if len(f) >= 2:
+        commit_time[f[0]] = int(f[1])
+        commit_subject[f[0]] = f[2] if len(f) > 2 else ""
+
+def load(fn, what):
+    try:
+        body = json.load(open(tmp + "/" + fn))
+    except Exception:
+        print("FAIL  the hub returned no readable answer for %s  [is Prometheus up?]" % what); sys.exit(2)
+    if body.get("status") != "success":
+        print("FAIL  the hub rejected the %s query: %s" % (what, body.get("error", "<no reason>"))); sys.exit(2)
+    return body["data"]["result"]
+
+stamps    = load("stamps.json", "stamps")
+workloads = load("workloads.json", "workloads")
+if not stamps:
+    print("FAIL  no Kustomization series in the window  [monitoring stamp Ready? window too short?]"); sys.exit(1)
+
+# The hub scrapes its own kube-state-metrics locally, and externalLabels are attached on
+# remote-write - not to local queries - so the platform cluster arrives with no cluster
+# label. Name it rather than dropping it into an anonymous bucket.
+def clus(m): return m.get("cluster") or "local-01*"
+
+rev_tl, ready_tl = defaultdict(list), defaultdict(list)
+for s in stamps:
+    m = s["metric"]; k = (clus(m), m.get("name", "?"))
+    rev = (m.get("revision") or "").split("sha1:")[-1][:40]
+    rdy = m.get("ready") == "True"
+    for t, _ in s["values"]:
+        t = int(float(t)); rev_tl[k].append((t, rev)); ready_tl[k].append((t, rdy))
+for k in rev_tl:   rev_tl[k].sort()
+for k in ready_tl: ready_tl[k].sort()
+
+def revision_at(cluster, stamp, t):
+    best = None
+    for ts, rev in rev_tl.get((cluster, stamp), ()):
+        if ts <= t and rev: best = rev
+        elif ts > t: break
+    return best
+
+app_stamps = defaultdict(list)
+for (c, name) in rev_tl:
+    if name.startswith("app-"): app_stamps[c].append(name)
+
+def stamp_for(cluster, ns):
+    cand = "app-" + ns.rsplit("-", 1)[0] if "-" in ns else None
+    if cand and cand in app_stamps.get(cluster, ()): return cand
+    lst = app_stamps.get(cluster, [])
+    return lst[0] if len(lst) == 1 else None
+
+def tenant_of(stamp, ns):
+    # A tenant is only a tenant when the NAMESPACE says so: stage 22 gives each tenant a
+    # <tenant>-<env> namespace served by app-<tenant>. Before stage 22 the stamps are named
+    # for environments, and reading "prod" out of app-prod as a tenant would be wrong.
+    # There is exactly one tenant then, and stage 02 already named it: the platform.
+    if "-" in ns and stamp and stamp == "app-" + ns.rsplit("-", 1)[0]:
+        return ns.rsplit("-", 1)[0]
+    return "platform"
+
+# --- every deployment event: a workload generation INCREMENT --------------------------
+events = []          # (t, cluster, stamp, tenant, revision, is_prod)
+gen_tl = defaultdict(list)
+for s in workloads:
+    m = s["metric"]
+    k = (clus(m), m.get("namespace", "?"), m.get("deployment", "?"))
+    for t, v in s["values"]:
+        gen_tl[k].append((int(float(t)), float(v)))
+for (c, ns, dep), pts in gen_tl.items():
+    pts.sort(); st = stamp_for(c, ns)
+    if st is None: continue
+    prev = None
+    for t, g in pts:
+        if prev is not None and g > prev:
+            events.append((t, c, st, tenant_of(st, ns), revision_at(c, st, t), bool(prod_re.match(c))))
+        prev = g
+events.sort()
+
+prod_events = [e for e in events if e[5]]
+prod_units  = sorted({(e[1], e[3]) for e in prod_events})    # (cluster, tenant) in production
+
+# --- the unit is the CHANGE: group production deployments by revision -----------------
+changes = defaultdict(list)
+for t, c, st, ten, rev, _ in prod_events:
+    if rev: changes[rev].append((t, c, ten))
+
+n_units = len(prod_units)
+complete, partial = [], []
+for rev, apps in changes.items():
+    reached = {(c, ten) for _, c, ten in apps}
+    first, last = min(a[0] for a in apps), max(a[0] for a in apps)
+    ct = commit_time.get(rev)
+    # Lead time is measured at FIRST production arrival: that is when the feedback
+    # exists. So every change that reached production at all has one - no censoring,
+    # which is a happy side effect of measuring the thing the metric is actually for.
+    rec = dict(rev=rev, first=first, last=last, reached=len(reached),
+               lead=(first - ct if ct and first >= ct else None), spread=last - first)
+    (complete if len(reached) >= n_units else partial).append(rec)
+
+# --- incidents: sustained not-Ready on PRODUCTION stamps, merged across tenants --------
+windows = []
+for (c, name), pts in ready_tl.items():
+    if not name.startswith("app-") or not prod_re.match(c): continue
+    changes_r = []
+    for t, rdy in pts:
+        if not changes_r or changes_r[-1][1] != rdy: changes_r.append((t, rdy))
+    for i, (t, rdy) in enumerate(changes_r):
+        if rdy: continue
+        fin = changes_r[i + 1][0] if i + 1 < len(changes_r) else end
+        if fin - t >= sustain: windows.append((t, fin, c, name))
+windows.sort()
+incidents = []
+for w in windows:
+    if incidents and w[0] <= incidents[-1]["end"]:
+        incidents[-1]["end"] = max(incidents[-1]["end"], w[1])
+        incidents[-1]["units"].add((w[2], w[3]))
+    else:
+        incidents.append(dict(start=w[0], end=w[1], units={(w[2], w[3])}))
+
+# CFR is incidents / changes, and that is a deliberate simplification: attributing a
+# given incident to a given change needs more than timing (a failure can surface hours
+# after the deploy that caused it, or be caused by something outside the repo entirely).
+# Reporting the ratio and naming the rule beats a confident wrong attribution.
+
+def fmt(sec):
+    if sec is None: return "-"
+    if sec < 90:     return "%ds" % sec
+    if sec < 5400:   return "%dm" % round(sec / 60.0)
+    if sec < 172800: return "%.1fh" % (sec / 3600.0)
+    return "%.1fd" % (sec / 86400.0)
+
+def pct(vals, q):
+    v = sorted(x for x in vals if x is not None)
+    if not v: return None
+    return v[min(len(v) - 1, int(round(q * (len(v) - 1))))]
+
+days = max((end - start) / 86400.0, 1e-9)   # may be narrowed by retention, below
+n_changes = len(complete) + len(partial)
+leads     = [c["lead"] for c in complete + partial]
+
+print("window       last %s   (%s -> %s)" % (os.environ["WINDOW"],
+      datetime.datetime.fromtimestamp(start).strftime("%Y-%m-%d"),
+      datetime.datetime.fromtimestamp(end).strftime("%Y-%m-%d")))
+print("production   %s   (%d unit%s: %s)" % (os.environ["PROD"], n_units,
+      "" if n_units == 1 else "s", ", ".join("%s/%s" % (t, c) for c, t in prod_units) or "none"))
+print("source       gotk_resource_info + kube_deployment_metadata_generation, %ds resolution" % step)
+# The window you asked for is not necessarily the window you got: Prometheus retention
+# silently truncates it, and a short retention makes a long window look like a quiet
+# period rather than an absent one. Report the span actually covered.
+first_sample = min((int(float(v[0])) for s_ in stamps for v in s_["values"]), default=start)
+if first_sample > start + 2 * step:
+    print("RETENTION    data begins %s, not %s - the hub keeps less history than the window"
+          % (datetime.datetime.fromtimestamp(first_sample).strftime("%Y-%m-%d %H:%M"),
+             datetime.datetime.fromtimestamp(start).strftime("%Y-%m-%d %H:%M")))
+    print("             asked for. Every rate below is over the SHORTER span; a long --window")
+    print("             on a short retention reports a quiet fleet rather than a missing one.")
+    days = max((end - first_sample) / 86400.0, 1e-9)
+if step >= sustain:
+    print("WARNING      step (%ds) is coarser than the sustain filter (%ds); counts are a FLOOR" % (step, sustain))
+print()
+if not n_units:
+    print("no production units matched %s - nothing to measure." % os.environ["PROD"]); sys.exit(0)
+
+print("DORA (production)")
+print("  deployment frequency   %-8s %.2f/day   (%d distinct change%s)"
+      % ("", n_changes / days, n_changes, "" if n_changes == 1 else "s"))
+print("  lead time for changes  median %-6s p95 %-6s  commit -> production, first arrival"
+      % (fmt(pct(leads, 0.5)), fmt(pct(leads, 0.95))))
+print("  change failure rate    %-8s %s   (%d incident%s / %d changes)"
+      % ("", ("%.0f%%" % (100.0 * len(incidents) / n_changes)) if n_changes else "-",
+         len(incidents), "" if len(incidents) == 1 else "s", n_changes))
+mt = [i["end"] - i["start"] for i in incidents]
+print("  time to restore        median %-6s p95 %-6s  per incident, last unit recovered"
+      % (fmt(pct(mt, 0.5)), fmt(pct(mt, 0.95))))
+print()
+span_txt = ("%.1f days" % days) if days >= 1 else ("%.1f hours" % (days * 24))
+print("  denominator  %d change%s over %s across %d production unit%s."
+      % (n_changes, "" if n_changes == 1 else "s", span_txt, n_units, "" if n_units == 1 else "s"))
+if n_changes < 10:
+    print("               Too few to steer by - DORA is a trend instrument, not a spot reading.")
+if n_units > 1:
+    spreads = [c["spread"] for c in complete]
+    print("  convergence  median %s from the first production unit to the last (p95 %s),"
+          % (fmt(pct(spreads, 0.5)), fmt(pct(spreads, 0.95))))
+    print("               over %d change%s that finished rolling out. This answers \"when is"
+          % (len(complete), "" if len(complete) == 1 else "s"))
+    print("               everyone safe\" - a real question, and deliberately NOT lead time.")
+    if partial:
+        print("  in flight    %d change%s had not reached every production unit when the window"
+              % (len(partial), "" if len(partial) == 1 else "s"))
+        print("               closed. They have a lead time (they reached production) but no")
+        print("               convergence time yet, so they are excluded from that line only.")
+
+if by:
+    print()
+    print("DIAGNOSTIC - within production, by %s. Not four more DORA readings: the metric" % by)
+    print("is the fleet number above, and this says which %s is moving it." % by)
+    print()
+    agg = defaultdict(lambda: [0, []])
+    for t, c, st, ten, rev, _ in prod_events:
+        k = {"tenant": ten, "cluster": c, "stamp": "%s/%s" % (st, c)}[by]
+        ct = commit_time.get(rev) if rev else None
+        agg[k][0] += 1
+        agg[k][1].append(t - ct if ct and t >= ct else None)
+    w = max(12, max(len(x) for x in agg) + 2)
+    print("  %-*s %10s %12s %12s" % (w, by, "applied", "lag (med)", "lag (p95)"))
+    for k in sorted(agg):
+        n, ls = agg[k]
+        print("  %-*s %10d %12s %12s" % (w, k, n, fmt(pct(ls, 0.5)), fmt(pct(ls, 0.95))))
+    print()
+    print("  applied = per-unit applications, NOT deployments. One change reaching every")
+    print("  unit is one deployment; these rows sum to more and must never be added up.")
+
+if rungs:
+    print()
+    print("DIAGNOSTIC - non-production rungs. These are NOT DORA metrics: DORA measures")
+    print("production. This is feedback-loop speed, which is a different question.")
+    print()
+    other = defaultdict(lambda: [0, []])
+    for t, c, st, ten, rev, isp in events:
+        if isp: continue
+        ct = commit_time.get(rev) if rev else None
+        other[c][0] += 1
+        other[c][1].append(t - ct if ct and t >= ct else None)
+    if not other:
+        print("  (none)")
+    else:
+        w = max(12, max(len(x) for x in other) + 2)
+        print("  %-*s %10s %12s %12s" % (w, "rung", "applied", "lag (med)", "lag (p95)"))
+        for k in sorted(other):
+            n, ls = other[k]
+            print("  %-*s %10d %12s %12s" % (w, k, n, fmt(pct(ls, 0.5)), fmt(pct(ls, 0.95))))
+
+if stages:
+    print()
+    print("WHERE THE LEAD TIME GOES")
+    print("The headline above starts at the commit the production stamp applied - which is")
+    print("the PROMOTION, not the change. Everything before it is invisible there, and is")
+    print("usually most of the elapsed time. DORA exists to expose exactly that.")
+    print()
+    prs = json.load(open(tmp + "/prs.json"))
+
+    def iso(x):
+        if not x: return None
+        return int(datetime.datetime.strptime(x, "%Y-%m-%dT%H:%M:%SZ")
+                   .replace(tzinfo=datetime.timezone.utc).timestamp())
+
+    by_merge = {}
+    for pr in prs:
+        mc = (pr.get("mergeCommit") or {}).get("oid")
+        if mc: by_merge[mc[:40]] = pr
+
+    # The version string is the join key across the whole chain, and the commit convention
+    # is what makes it findable: pin(app-dev): app <V> and promote(app-prod): app <V> carry
+    # the same token. Pre-convention subjects are matched too, so old history still reads.
+    def version_of(subject):
+        # A trailing " (#N)" is GitHub squash-merge decoration - it predates the
+        # merge-commit-only policy and still sits in this repo history, so it is
+        # tolerated rather than assumed away.
+        for pat in (r"^promote\(app-[a-z0-9-]+\): app (\S+?)(?: \(#\d+\))?$",
+                    r"^pin\(app-[a-z0-9-]+\): app (\S+?)(?: \(#\d+\))?$",
+                    r"^Promote: app (\S+) to prod(?: \(#\d+\))?$",
+                    r"^Dev: app (\S+?)(?: \(#\d+\))?$"):
+            m = re.match(pat, subject)
+            if m: return m.group(1)
+        return None
+
+    dev_pin = {}
+    for sha, subj in commit_subject.items():
+        v = version_of(subj)
+        if v and (re.match(r"^pin\(app-dev\): ", subj) or re.match(r"^Dev: app ", subj)):
+            if v not in dev_pin or commit_time[sha] < commit_time[dev_pin[v]]:
+                dev_pin[v] = sha
+
+    rows, unmatched = [], 0
+    for ch in sorted(complete + partial, key=lambda c: c["first"]):
+        rev = ch["rev"]
+        subj = commit_subject.get(rev, "")
+        v = version_of(subj)
+        pr = by_merge.get(rev)
+        dp = dev_pin.get(v) if v else None
+        if not (pr or dp):
+            unmatched += 1
+            continue
+        rows.append(dict(v=v or rev[:7], dev=commit_time.get(dp) if dp else None,
+                         opened=iso(pr.get("createdAt")) if pr else None,
+                         merged=iso(pr.get("mergedAt")) if pr else None,
+                         reviews=len(pr.get("reviews") or []) if pr else 0,
+                         prod=ch["first"]))
+
+    if not rows:
+        print("  No production change in this window could be traced back past its promotion.")
+        print("  Two causes, both fixable: promotions that did not go through a PR (nothing to")
+        print("  read review time from), and subjects the grammar cannot parse. This is the")
+        print("  clearest argument for the commit convention there is - the version string in")
+        print("  pin(app-dev): app <V> and promote(app-prod): app <V> IS the join key.")
+    else:
+        print("  %-26s %11s %11s %11s %11s" % ("change", "dev->PR", "review", "merge->prod", "TOTAL"))
+        print("  %-26s %11s %11s %11s %11s" % ("-"*25, "-"*11, "-"*11, "-"*11, "-"*11))
+        soaks, reviews, deploys_s, totals = [], [], [], []
+        for r in rows:
+            soak   = r["opened"] - r["dev"] if r["dev"] and r["opened"] else None
+            review = r["merged"] - r["opened"] if r["opened"] and r["merged"] else None
+            depl   = r["prod"] - r["merged"] if r["merged"] and r["prod"] >= r["merged"] else None
+            first  = r["dev"] or r["opened"] or r["merged"]
+            total  = r["prod"] - first if first and r["prod"] >= first else None
+            for lst, val in ((soaks, soak), (reviews, review), (deploys_s, depl), (totals, total)):
+                if val is not None: lst.append(val)
+            print("  %-26s %11s %11s %11s %11s" % (r["v"][:26], fmt(soak), fmt(review), fmt(depl), fmt(total)))
+        print("  %-26s %11s %11s %11s %11s" % ("median", fmt(pct(soaks, 0.5)), fmt(pct(reviews, 0.5)),
+                                               fmt(pct(deploys_s, 0.5)), fmt(pct(totals, 0.5))))
+        print()
+        print("  dev->PR      the change is live on dev and nobody has asked to promote it.")
+        print("               Soak time if deliberate, queue time if not - and the two look")
+        print("               identical from here, which is why it is worth watching.")
+        print("  review       PR opened -> merged. Wall-clock, so it includes the wait for a")
+        print("               reviewer, which is usually the larger half and the one a team")
+        print("               can actually shorten.")
+        print("  merge->prod  the only interval the headline lead time covers.")
+        if unmatched:
+            print()
+            print("  %d change(s) could not be traced past their promotion and are omitted." % unmatched)
+
+    print()
+    print("  NOT MEASURED HERE: everything in the app repository - the source commit, CI, and")
+    print("  the image build. This tool sees the config repo, so the chain starts where the")
+    print("  version arrives. To close it, join the image tag to the app repo tag of the same")
+    print("  name and read its commit date; the pin already carries the tag.")
+    print()
+
+recon = 0
+for (c, name), pts in rev_tl.items():
+    if not name.startswith("app-"): continue
+    prev = None
+    for t, rev in pts:
+        if prev is not None and rev != prev and rev: recon += 1
+        prev = rev
+print()
+print("reconciles   %d stamp revision changes across all rungs produced %d production" % (recon, len(prod_events)))
+print("             application(s), which are %d distinct change(s). Reconcile is not" % n_changes)
+print("             change, and an application is not a deployment.")
+missing = sum(1 for c in complete + partial if c["lead"] is None)
+if missing:
+    print()
+    print("note         %d change(s) had no matching commit in this clone, so their lead" % missing)
+    print("             time is excluded rather than guessed - git fetch, or it predates the window.")
+'

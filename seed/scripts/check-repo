@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Is this repository still configured the way day zero said? PASS/FAIL per setting, exit 1
+# on any FAIL. Reads back the merge policy (rule 1.2), the main ruleset (1.3), the seeded
+# files (1.4, 2.2), this clone's local settings, and the backlog (2.5). Run it at stage 00
+# after seeding, and whenever you doubt the repo - a real platform repo keeps it.
+# Usage: scripts/check-repo
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 2
+fails=0
+pass() { printf 'PASS  %s\n' "$1"; }
+fail() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
+repo="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
+
+# --- merge policy ------------------------------------------------------------------
+r="$(gh api "repos/$repo")"
+if [ "$(printf '%s' "$r" | jq -r '.allow_merge_commit and (.allow_squash_merge | not) and (.allow_rebase_merge | not) and .merge_commit_title == "PR_TITLE" and .merge_commit_message == "PR_BODY" and .delete_branch_on_merge and .allow_auto_merge')" = true ]; then
+  pass "merge policy: merge commit only, subject = PR title, body = PR body, branches delete on merge, auto-merge on"
+else
+  fail "merge policy drifted from rule 1.2: $(printf '%s' "$r" | jq -c '{allow_merge_commit, allow_squash_merge, allow_rebase_merge, merge_commit_title, merge_commit_message, delete_branch_on_merge, allow_auto_merge}')"
+fi
+
+# --- the main ruleset ----------------------------------------------------------------
+id="$(gh api "repos/$repo/rulesets" --jq '.[] | select(.name == "main") | .id')"
+if [ -z "$id" ]; then
+  fail "no ruleset named main - stage 00 step 1 creates it (rule 1.3)"
+else
+  rs="$(gh api "repos/$repo/rulesets/$id")"
+  types="$(printf '%s' "$rs" | jq -r '[.rules[].type] | sort | join(" ")')"
+  bypass="$(printf '%s' "$rs" | jq -r '(.bypass_actors // []) | length')"
+  enforcement="$(printf '%s' "$rs" | jq -r .enforcement)"
+  for t in deletion non_fast_forward pull_request; do
+    case " $types " in *" $t "*) ;; *) fail "ruleset main lacks the $t rule (has: $types)";; esac
+  done
+  if [ "$enforcement" = active ] && [ "$bypass" = 0 ]; then
+    pass "ruleset main: active, no bypass actors; rules: $types"
+  else
+    fail "ruleset main: enforcement $enforcement, $bypass bypass actor(s) - rule 1.3 allows none"
+  fi
+fi
+
+# --- the tag ruleset -------------------------------------------------------------------
+tid="$(gh api "repos/$repo/rulesets" --jq '.[] | select(.name == "tags") | .id')"
+if [ -z "$tid" ]; then
+  fail "no ruleset named tags - stage 00 step 1 creates it (rule 1.3: tags immutable once created)"
+else
+  trs="$(gh api "repos/$repo/rulesets/$tid")"
+  ttypes="$(printf '%s' "$trs" | jq -r '[.rules[].type] | sort | join(" ")')"
+  tbypass="$(printf '%s' "$trs" | jq -r '(.bypass_actors // []) | length')"
+  tenf="$(printf '%s' "$trs" | jq -r .enforcement)"
+  for t in deletion non_fast_forward update; do
+    case " $ttypes " in *" $t "*) ;; *) fail "ruleset tags lacks the $t rule (has: $ttypes)";; esac
+  done
+  case " $ttypes " in *" creation "*) fail "ruleset tags blocks creation - minting stage tags is the loop";; esac
+  if [ "$tenf" = active ] && [ "$tbypass" = 0 ]; then
+    pass "ruleset tags: active, no bypass actors; rules: $ttypes (creation open)"
+  else
+    fail "ruleset tags: enforcement $tenf, $tbypass bypass actor(s) - rule 1.3 allows none"
+  fi
+fi
+
+# --- seeded files ----------------------------------------------------------------------
+for f in .gitattributes .gitmessage env.sh .github/pull_request_template.md decisions/README.md \
+         .claude/skills/{audit-evidence,promote,fleet-triage,rotate-secret,onboard-tenant,declare-freeze,break-glass,run-drill}/SKILL.md; do
+  [ -f "$f" ] && pass "$f present" || fail "$f missing - stage 00 step 1 seeds it from the course"
+done
+grep -q 'eol=lf' .gitattributes 2>/dev/null && pass ".gitattributes forces LF (rule 1.4)" || fail ".gitattributes does not force LF"
+[ -z "$(find scripts -maxdepth 1 -type f ! -name '*.md' ! -perm -u+x)" ] && pass "every script under scripts/ is executable" || fail "non-executable files under scripts/: $(find scripts -maxdepth 1 -type f ! -name '*.md' ! -perm -u+x | tr '\n' ' ')"
+
+# --- this clone --------------------------------------------------------------------------
+[ "$(git config --local pull.rebase)" = false ] && pass "pull.rebase false in this clone" || fail "pull.rebase is not false in this clone (stage 00 step 1)"
+[ "$(git config --local commit.template)" = .gitmessage ] && pass "commit.template .gitmessage in this clone" || fail "commit.template unset in this clone (stage 00 step 1)"
+if [ -d hooks ]; then
+  [ "$(git config --local core.hooksPath)" = hooks ] && pass "core.hooksPath hooks" || fail "hooks/ exists but core.hooksPath is unset in this clone (stage 11 step 5) - CI is the only gate you have"
+fi
+
+# --- the backlog -------------------------------------------------------------------------
+ms="$(gh api "repos/$repo/milestones?state=all&per_page=100" --jq length)"
+[ "$ms" = 8 ] && pass "8 milestones (Acts I-VIII)" || fail "$ms milestone(s) - the course's tools/seed-backlog creates 8"
+first="$(gh api "repos/$repo/issues/1" --jq 'if .pull_request then "a pull request" else .title end' 2>/dev/null || echo "absent")"
+case "$first" in
+  "00 "*) pass "issue #1 is stage 00 - the backlog was seeded before the first PR";;
+  *) fail "issue #1 is $first - the backlog must be seeded on a fresh repo, before any issue or PR (stage 00 step 1)";;
+esac
+open="$(gh api "repos/$repo/issues?state=open&per_page=100" --jq '[.[] | select(.pull_request | not)] | length')"
+pass "$open open work item(s); where am I:  gh issue list --milestone \"<act>\" --search \"sort:created-asc\""
+
+echo
+if [ "$fails" -eq 0 ]; then echo "OK  day zero still holds"; exit 0; fi
+echo "$fails check(s) failed - each names the stage that sets it."
+exit 1

@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# The helm<->flux parity gate: the helm CLI is a render tool (chart authoring,
+# `helm template`/`lint`, values verification), so local renders must match what
+# helm-controller does in-cluster. Same chain as kustomize, with a free mapping:
+#   flux pin -> helm-controller version (flux2 manifests) -> go.mod helm.sh/helm/vN
+#   (replace wins over require; the major moved from v3 to v4 with flux 2.8) ->
+#   that IS the CLI version, digit for digit.
+# No skew ladder needed: helm's k8s window (n..n-3) covers the three-rung fleet.
+set -uo pipefail
+
+cd "$(dirname "$0")/.."
+VERSIONS=clusters/versions.yaml
+pass=0; fail=0
+ok()  { echo "PASS  $1"; pass=$((pass+1)); }
+bad() { echo "FAIL  $1${2:+  [$2]}"; fail=$((fail+1)); }
+
+echo "== check-helm-flux-parity: template like the controller installs =="
+
+flux_v=$(flux version --client 2>/dev/null | grep -o 'v[0-9][0-9.]*' | head -1)
+[ -n "$flux_v" ] || { echo "FAIL  flux CLI not found (run check-flux-aks-parity first)"; exit 1; }
+
+hc=$(gh api "repos/fluxcd/flux2/contents/manifests/bases/helm-controller/kustomization.yaml?ref=$flux_v" \
+  --jq .content 2>/dev/null | base64 -d | grep -o 'helm-controller/releases/download/v[0-9.]*' | head -1)
+hc=${hc##*/}
+if [ -n "$hc" ]; then
+  ok "flux $flux_v ships helm-controller $hc (from flux2's pinned manifests)"
+else
+  bad "controller version discoverable for flux $flux_v" "gh api failed - offline?"; exit 1
+fi
+
+gomod=$(gh api "repos/fluxcd/helm-controller/contents/go.mod?ref=$hc" --jq .content 2>/dev/null | base64 -d)
+eff=$(echo "$gomod" | grep -E 'helm.sh/helm/v[0-9]+ =>' | grep -o 'v[0-9.]*$' | head -1)
+if [ -n "$eff" ]; then
+  ok "controller REPLACES helm to $eff (a pin-back - the require line is not what installs)"
+else
+  eff=$(echo "$gomod" | grep -E 'helm.sh/helm/v[0-9]+ v' | grep -o 'v[0-9][0-9.]*' | tail -1)
+  [ -n "$eff" ] && ok "controller embeds helm $eff (no replace in effect)" \
+    || { bad "effective helm version discoverable" "go.mod parse failed"; exit 1; }
+fi
+want=${eff#v}
+
+if [ -f "$VERSIONS" ]; then
+  pin=$(yq -r '.helm' "$VERSIONS")
+  [ "$pin" = "$want" ] \
+    && ok "versions.yaml pin ($pin) matches the derived truth ($want)" \
+    || bad "versions.yaml pin matches the derived truth" "pinned $pin, derived $want - flux moved; update the pin"
+else
+  echo "SKIP  versions.yaml pin - no $VERSIONS yet (the pin file is born at stage 06; today's derived truth: $want)"
+fi
+
+have=$(helm version --template '{{.Version}}' 2>/dev/null); have=${have#v}
+if [ "$have" = "$want" ]; then
+  ok "installed helm ($have) matches the controller's embedded library"
+else
+  alt=""
+  for p in $(which -a helm 2>/dev/null | sort -u); do
+    v=$("$p" version --template '{{.Version}}' 2>/dev/null); v=${v#v}
+    [ "$v" = "$want" ] && { alt="$p"; break; }
+  done
+  if [ -n "$alt" ]; then
+    bad "installed helm matches the controller's embedded library" "the pinned helm exists at $alt but $(command -v helm) shadows it - fix PATH order"
+  else
+    bad "installed helm matches the controller's embedded library" "have ${have:-none} at $(command -v helm), want $want - install: curl -s https://get.helm.sh/helm-v$want-linux-amd64.tar.gz | tar xz --strip-components=1 -C ~/.local/bin linux-amd64/helm"
+  fi
+fi
+
+echo
+echo "check-helm-flux-parity: $pass passed, $fail failed"
+[ "$fail" -eq 0 ]

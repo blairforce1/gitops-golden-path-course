@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Create the local kind cluster for gitops-golden-path.
+# Detects docker or podman; fails early with a named missing tool.
+set -euo pipefail
+
+CLUSTER_NAME="${CLUSTER_NAME:-ggp-local-01}"
+
+missing=0
+for t in kind kubectl flux kustomize; do
+  command -v "$t" >/dev/null || { echo "MISSING: $t" >&2; missing=1; }
+done
+[ "$missing" -eq 0 ] || exit 1
+
+if command -v docker >/dev/null && docker info >/dev/null 2>&1; then
+  # "docker" may be podman wearing docker's name (podman-docker shim, per stage 00).
+  # kind is the one tool that must know the truth: it needs the podman provider.
+  if docker --version 2>/dev/null | grep -qi podman; then
+    echo "runtime: podman (via docker shim; setting KIND_EXPERIMENTAL_PROVIDER)"
+    export KIND_EXPERIMENTAL_PROVIDER=podman
+  else
+    echo "runtime: docker"
+  fi
+elif command -v podman >/dev/null; then
+  echo "runtime: podman (setting KIND_EXPERIMENTAL_PROVIDER)"
+  export KIND_EXPERIMENTAL_PROVIDER=podman
+else
+  echo "MISSING: container runtime (docker or podman)" >&2
+  exit 1
+fi
+
+# Kubernetes version = node image, resolved from the class's pin in clusters/versions.yaml
+# (CLASS=platform|dev|prod, default platform). The fleet deliberately spans three minors:
+# platform tests next, dev is current, prod is stable - see the ladder file and
+# scripts/check-version-ladder for the kubectl-tracks-dev rule.
+# Override explicitly (with digest, from kind's release notes) via:
+#   KIND_NODE_IMAGE=kindest/node:vX.Y.Z@sha256:... ./scripts/cluster-up
+# To "upgrade" a cluster here: bump its class pin in versions.yaml, cluster-down, cluster-up.
+# kind can't upgrade in place, so locally clusters are replaced - the platform definition
+# lives in git, so replacement is cheap. On real infrastructure the rule splits:
+# patches and k8s version upgrades go IN-PLACE (tested up the ladder), while shape
+# changes and regretted choices migrate to new clusters.
+CLASS="${CLASS:-platform}"
+VERSIONS="$(dirname "$0")/../clusters/versions.yaml"
+if [ -z "${KIND_NODE_IMAGE:-}" ] && [ -f "$VERSIONS" ]; then
+  KIND_NODE_IMAGE=$(yq -r ".classes.$CLASS.node_image" "$VERSIONS")
+  echo "class: $CLASS (node image $KIND_NODE_IMAGE from clusters/versions.yaml)"
+elif [ -z "${KIND_NODE_IMAGE:-}" ]; then
+  echo "no clusters/versions.yaml yet - using kind's bundled default node image (the ladder pins this per class from stage 07; check-version-ladder will say if this cluster drifted)"
+fi
+# Ingress needs port mappings baked in at create time (stage 05+): host HTTP_PORT/HTTPS_PORT
+# map to the node's 80/443, and the node is labeled for the ingress controller's nodeSelector.
+# Each cluster in the fleet gets its own host port pair (8080/8443, 8081/8444, 8082/8445).
+HTTP_PORT="${HTTP_PORT:-8080}"
+HTTPS_PORT="${HTTPS_PORT:-8443}"
+
+# Fleet preflight (Linux): kind nodes share the host kernel, and inotify limits are
+# per-user - one cluster fits inside distro defaults, a fleet does not. Warn, don't fail:
+# the exhaustion presents as unrelated crashloops ("too many open files") later.
+if [ "$(uname -s)" = Linux ] && [ -n "$(kind get clusters 2>/dev/null)" ]; then
+  inst=$(sysctl -n fs.inotify.max_user_instances 2>/dev/null || echo 0)
+  [ "${inst:-0}" -ge 1024 ] || echo "WARN: fs.inotify.max_user_instances=$inst - low for a multi-cluster fleet; see stage 07 step 1 (recommended 1024, watches 524288)"
+fi
+
+if kind get clusters 2>/dev/null | grep -qx "$CLUSTER_NAME"; then
+  echo "cluster '$CLUSTER_NAME' already exists"
+else
+  cfg=$(mktemp)
+  cat > "$cfg" <<EOF
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+  labels:
+    ingress-ready: "true"
+  extraPortMappings:
+  - containerPort: 80
+    hostPort: $HTTP_PORT
+  - containerPort: 443
+    hostPort: $HTTPS_PORT
+EOF
+  kind create cluster --name "$CLUSTER_NAME" --wait 120s --config "$cfg" \
+    ${KIND_NODE_IMAGE:+--image "$KIND_NODE_IMAGE"}
+  rm -f "$cfg"
+fi
+
+kubectl cluster-info --context "kind-$CLUSTER_NAME"
+echo "ok: cluster '$CLUSTER_NAME' ready"

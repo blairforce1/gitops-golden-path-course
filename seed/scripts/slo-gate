@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# SLO gate: the promotion ladder's second signature. Convergence evidence (green
+# status contexts) says a rung is Ready; this says the rung MET ITS SLO over its
+# soak window. Refuses the next rung while the error budget is burning - and
+# refuses on NO TRAFFIC too: absence of evidence is not health.
+# Usage: slo-gate <cluster> [window]     e.g. slo-gate dev-01 30m
+# Clusters are the remote-writing spokes (dev-01, prod-01): the hub's own series carry
+# no cluster label, because externalLabels are applied on egress, not to local storage.
+# Tunables (env): SLO_TARGET (default: read from the SLO in git), SLO_P95_MAX (default 0.3s)
+set -uo pipefail
+
+CLUSTER="${1:?usage: slo-gate <cluster> [window e.g. 30m]}"
+WINDOW="${2:-30m}"
+P95_MAX="${SLO_P95_MAX:-0.3}"
+# TARGET is resolved AFTER the port-forward: it is read from the SLO itself
+# (the slo:app_availability:target recording rule), so the promise lives in git
+# in exactly one place. SLO_TARGET overrides for a what-if run.
+
+# The hub judges the whole fleet. Reach it by port-forward, not by node IP: NodePorts
+# on a kind node are reachable from other containers (that is how the spokes remote-write)
+# but NOT from the host under rootless podman, where container IPs live in a namespace the
+# host does not route to. port-forward goes through the API server and works everywhere.
+# Background-process rule: readiness loop before first use, explicit stop after last.
+PORT="${SLO_GATE_PORT:-19092}"
+kubectl --context kind-ggp-local-01 -n monitoring port-forward svc/kube-prometheus-stack-prometheus \
+  "$PORT:9090" >/dev/null 2>&1 &
+PF=$!
+trap 'kill "$PF" 2>/dev/null; wait "$PF" 2>/dev/null' EXIT
+for _ in $(seq 1 20); do curl -s -o /dev/null "http://localhost:$PORT/-/ready" && break; sleep 1; done
+curl -s -o /dev/null --max-time 5 "http://localhost:$PORT/-/ready" \
+  || { echo "FAIL  hub reachable  [platform cluster down, or monitoring stamp not Ready - the gate needs the fleet's judge]"; exit 1; }
+
+pass=0; fail=0
+ok()  { echo "PASS  $1"; pass=$((pass+1)); }
+bad() { echo "FAIL  $1${2:+  [$2]}"; fail=$((fail+1)); }
+q() { curl -s --max-time 10 "http://localhost:$PORT/api/v1/query" --data-urlencode "query=$1" \
+      | yq -p=json '.data.result[0].value[1] // ""' 2>/dev/null; }
+
+# The target comes from the SLO in git. A freshly-applied PrometheusRule is not
+# instantly queryable: prometheus-operator has to regenerate the rule files, the
+# config-reloader has to reload them, and the group has to evaluate once - up to
+# about a minute end to end. Wait for it rather than reporting a confusing absence.
+TARGET="${SLO_TARGET:-}"
+if [ -z "$TARGET" ]; then
+  for _ in $(seq 1 12); do
+    TARGET=$(q 'slo:app_availability:target')
+    [ -n "$TARGET" ] && [ "$TARGET" != "null" ] && break
+    sleep 5
+  done
+fi
+if [ -z "$TARGET" ] || [ "$TARGET" = "null" ]; then
+  echo "FAIL  the SLO is queryable  [slo:app_availability:target still absent after 60s. Applied but not loaded? check the rule's health:"
+  echo "                             curl -s localhost:\$PORT/api/v1/rules | yq -p=json '.data.groups[] | select(.name==\"app-slo\")'"
+  echo "                             ...and that the PrometheusRule carries the label release=kube-prometheus-stack]"
+  exit 1
+fi
+
+echo "== slo-gate: $CLUSTER over $WINDOW (SLO >=$TARGET from git, p95 <=${P95_MAX}s) =="
+
+req=$(q "sum(increase(traefik_service_requests_total{exported_service=~\"ggp-app-.*\",cluster=\"$CLUSTER\"}[$WINDOW]))")
+if [ -z "$req" ] || [ "$req" = "null" ]; then
+  bad "traffic over $WINDOW: NONE" "a rung nobody exercised has proven nothing - is the probe loop running?"
+else
+  ok "traffic: ${req%.*} requests in $WINDOW"
+
+  err=$(q "sum(increase(traefik_service_requests_total{exported_service=~\"ggp-app-.*\",code=~\"5..\",cluster=\"$CLUSTER\"}[$WINDOW]))")
+  { [ -z "$err" ] || [ "$err" = "null" ]; } && err=0
+  avail=$(awk -v e="$err" -v r="$req" 'BEGIN{printf "%.5f", 1 - e/r}')
+  awk -v a="$avail" -v t="$TARGET" 'BEGIN{exit !(a>=t)}' \
+    && ok "availability over $WINDOW: $avail (target $TARGET) - met" \
+    || bad "availability over $WINDOW: $avail (target $TARGET) - NOT met" "error budget burning: fix it, then let the window clear before promoting"
+
+  p95=$(q "histogram_quantile(0.95, sum by (le) (rate(traefik_service_request_duration_seconds_bucket{exported_service=~\"ggp-app-.*\",cluster=\"$CLUSTER\"}[$WINDOW])))")
+  if [ -n "$p95" ] && [ "$p95" != "null" ] && [ "$p95" != "NaN" ]; then
+    awk -v p="$p95" -v m="$P95_MAX" 'BEGIN{exit !(p<=m)}' \
+      && ok "p95 latency over $WINDOW: ${p95}s (budget ${P95_MAX}s) - within" \
+      || bad "p95 latency over $WINDOW: ${p95}s (budget ${P95_MAX}s) - TOO SLOW" "slow is a failure mode Ready cannot see either"
+  else
+    bad "p95 latency over $WINDOW: not measurable" "no duration histogram for $CLUSTER in that window"
+  fi
+fi
+
+firing=$(q "count(ALERTS{alertname=~\"AppErrorBudget.*\",alertstate=\"firing\",cluster=\"$CLUSTER\"})")
+if [ -z "$firing" ] || [ "$firing" = "null" ] || [ "$firing" = "0" ]; then
+  ok "burn alerts on $CLUSTER: none firing"
+else
+  bad "burn alerts on $CLUSTER: $firing FIRING" "the pager and the gate agree"
+fi
+
+echo
+echo "slo-gate: $pass passed, $fail failed"
+[ "$fail" -eq 0 ]

@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Would this change drag credentials BACKWARDS, or undo something a revert cannot undo?
+# Two checks, because the two failure modes have different evidence:
+#   1. the DIFF carries secret material - old versions decay, and reverting the pointer
+#      may give you an address with nothing behind it. Reads paths only, never values.
+#   2. the change REVERTS a commit marked `!` - the author declared that reverting will
+#      not restore the previous state, and left a Roll-forward: recipe saying what to do
+#      instead (commit convention, rule 9).
+# Check 1 cannot be forgotten and is the authority. Check 2 is the author's knowledge on
+# top - it catches what a path scan cannot see, like a cluster that no longer exists.
+# Usage: revert-gate [base-ref] [head-ref]     defaults: origin/main...HEAD
+set -uo pipefail
+
+BASE="${1:-origin/main}"
+HEAD="${2:-HEAD}"
+rc=0
+
+# --- 1. reverts of commits marked `!` -----------------------------------------------
+while IFS= read -r subj; do
+  [ -n "$subj" ] || continue
+  orig=${subj#Revert \"}; orig=${orig%\"}
+  sha=$(git log --max-count=1000 --format='%H%x09%s' \
+        | awk -F'\t' -v m="$orig" '$2 == m { print $1; exit }')
+  [ -n "$sha" ] || continue
+  case "$orig" in *'!:'*) ;; *) continue;; esac
+  echo "REVERTING A COMMIT MARKED ! - the author said this will not restore the previous state:"
+  echo
+  echo "    $(git log -1 --format='%h  %s' "$sha")"
+  # the trailer and its continuation lines: from ^Roll-forward: until a blank line or
+  # the next trailer key. -A<n> would guess, and guess wrong in both directions.
+  git log -1 --format='%B' "$sha" \
+    | awk '/^Roll-forward:/ { p=1 } p && /^[[:space:]]*$/ { exit }
+           p && /^[A-Z][A-Za-z-]*:/ && !/^Roll-forward:/ { exit } p { print "    " $0 }'
+  echo
+  rc=1
+done < <(git log --format='%s' "$BASE..$HEAD" | grep '^Revert "' || true)
+
+# --- 2. secret material in the diff --------------------------------------------------
+files=$(git diff --name-only "$BASE" "$HEAD")
+[ -n "$files" ] || { [ $rc -eq 0 ] && echo "no changes"; exit $rc; }
+
+# Secret-bearing paths: the folder convention IS the query (stage 06), plus vault
+# references once stage 12 replaces ciphertext with pointers.
+hits=$(echo "$files" | grep -E '(^|/)secrets/|\.sops\.ya?ml$|\.externalsecret\.ya?ml$' || true)
+[ -n "$hits" ] || { [ $rc -eq 0 ] && echo "OK  no secret material in this change - ordinary revert rules apply"; exit $rc; }
+
+echo "SECRET MATERIAL in this change:"
+echo "$hits" | sed 's/^/    /'
+echo
+echo "If this is a REVERT, stop. Reverting a secret restores a value the provider may"
+echo "already have revoked - a green reconcile onto a dead credential. Roll forward,"
+echo "in ONE commit so no window exists where a cluster points at a dead value:"
+echo
+echo "    git revert -n -m 1 <sha>"
+echo "    git checkout HEAD -- $(echo "$hits" | tr '\n' ' ')"
+echo "    git commit -m 'revert(<scope>): <sha>, secret material kept forward'"
+exit 1

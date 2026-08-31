@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# The sops<->flux parity gate: what the sops CLI encrypts, kustomize-controller
+# must decrypt - and the controller decrypts with the sops library EMBEDDED in
+# its go.mod (age likewise, via filippo.io/age). Cross-version sops history is
+# real (the 3.8 MAC-computation change broke older decryptors), so a workstation
+# running "latest" writes ciphertext ahead of the fleet's decryptor. This script
+# walks the graph:
+#   flux pin -> controller version (flux2 manifests) -> controller go.mod ->
+#   getsops/sops/v3 (the decryptor) + filippo.io/age (the key machinery)
+# and compares the pins in clusters/versions.yaml and the installed CLIs,
+# handing out the pinned install if wrong.
+set -uo pipefail
+
+cd "$(dirname "$0")/.."
+VERSIONS=clusters/versions.yaml
+pass=0; fail=0
+ok()  { echo "PASS  $1"; pass=$((pass+1)); }
+bad() { echo "FAIL  $1${2:+  [$2]}"; fail=$((fail+1)); }
+
+echo "== check-sops-flux-parity: encrypt what the cluster can decrypt =="
+
+flux_v=$(flux version --client 2>/dev/null | grep -o 'v[0-9][0-9.]*' | head -1)
+[ -n "$flux_v" ] || { echo "FAIL  flux CLI not found (run check-flux-aks-parity first)"; exit 1; }
+
+kc=$(gh api "repos/fluxcd/flux2/contents/manifests/bases/kustomize-controller/kustomization.yaml?ref=$flux_v" \
+  --jq .content 2>/dev/null | base64 -d | grep -o 'kustomize-controller/releases/download/v[0-9.]*' | head -1)
+kc=${kc##*/}
+if [ -n "$kc" ]; then
+  ok "flux $flux_v ships kustomize-controller $kc (the decryptor lives there)"
+else
+  bad "controller version discoverable for flux $flux_v" "gh api failed - offline?"; exit 1
+fi
+
+gomod=$(gh api "repos/fluxcd/kustomize-controller/contents/go.mod?ref=$kc" --jq .content 2>/dev/null | base64 -d)
+# replace wins over require, same rule as the kustomize gate (none known for sops, but check)
+want_sops=$(echo "$gomod" | grep 'github.com/getsops/sops/v3 =>' | grep -o 'v[0-9.]*$' | head -1)
+[ -n "$want_sops" ] || want_sops=$(echo "$gomod" | grep 'github.com/getsops/sops/v3 v' | grep -o 'v[0-9.]*' | tail -1)
+want_age=$(echo "$gomod" | grep 'filippo.io/age =>' | grep -o 'v[0-9.]*$' | head -1)
+[ -n "$want_age" ] || want_age=$(echo "$gomod" | grep 'filippo.io/age v' | grep -o 'v[0-9.]*' | tail -1)
+if [ -n "$want_sops" ] && [ -n "$want_age" ]; then
+  ok "controller $kc embeds sops $want_sops and age $want_age (its go.mod is the master)"
+else
+  bad "embedded sops/age discoverable" "go.mod parse failed (sops: ${want_sops:-?}, age: ${want_age:-?})"; exit 1
+fi
+want_sops=${want_sops#v}; want_age=${want_age#v}
+
+for tool in sops age; do
+  eval "want=\$want_$tool"
+  if [ -f "$VERSIONS" ]; then
+    pin=$(yq -r ".$tool" "$VERSIONS")
+    [ "$pin" = "$want" ] \
+      && ok "versions.yaml $tool pin ($pin) matches the derived truth ($want)" \
+      || bad "versions.yaml $tool pin matches the derived truth" "pinned $pin, derived $want - flux moved; update the pin"
+  else
+    echo "SKIP  versions.yaml $tool pin - no $VERSIONS yet (the pin file is born at stage 06; today's derived truth: $want)"
+  fi
+done
+
+os=$(uname -s | tr '[:upper:]' '[:lower:]')
+arch=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
+
+have=$(sops --version 2>/dev/null | grep -o '[0-9][0-9.]*' | head -1)
+if [ "$have" = "$want_sops" ]; then
+  ok "installed sops ($have) encrypts what the cluster decrypts"
+else
+  alt=""
+  for p in $(which -a sops 2>/dev/null | sort -u); do
+    v=$("$p" --version 2>/dev/null | grep -o '[0-9][0-9.]*' | head -1)
+    [ "$v" = "$want_sops" ] && { alt="$p"; break; }
+  done
+  if [ -n "$alt" ]; then
+    bad "installed sops encrypts what the cluster decrypts" "the pinned sops exists at $alt but $(command -v sops) shadows it - fix PATH order"
+  else
+    bad "installed sops encrypts what the cluster decrypts" "have ${have:-none} at $(command -v sops 2>/dev/null || echo nowhere), want $want_sops - install: curl -sSLo ~/.local/bin/sops https://github.com/getsops/sops/releases/download/v$want_sops/sops-v$want_sops.$os.$arch && chmod +x ~/.local/bin/sops"
+  fi
+fi
+
+have=$(age --version 2>/dev/null | grep -o '[0-9][0-9.]*' | head -1)
+if [ "$have" = "$want_age" ]; then
+  ok "installed age ($have) matches the controller's embedded age"
+else
+  alt=""
+  for p in $(which -a age 2>/dev/null | sort -u); do
+    v=$("$p" --version 2>/dev/null | grep -o '[0-9][0-9.]*' | head -1)
+    [ "$v" = "$want_age" ] && { alt="$p"; break; }
+  done
+  if [ -n "$alt" ]; then
+    bad "installed age matches the controller's embedded age" "the pinned age exists at $alt but $(command -v age) shadows it - fix PATH order"
+  else
+    bad "installed age matches the controller's embedded age" "have ${have:-none} at $(command -v age 2>/dev/null || echo nowhere), want $want_age - install: curl -sSL https://github.com/FiloSottile/age/releases/download/v$want_age/age-v$want_age-$os-$arch.tar.gz | tar -xz -C ~/.local/bin --strip-components=1 age/age age/age-keygen"
+  fi
+fi
+
+echo
+echo "check-sops-flux-parity: $pass passed, $fail failed"
+[ "$fail" -eq 0 ]

@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Which protected paths does a change touch, and what does that mean for review?
+# Reports; it does not block - blocking is branch protection's job (stage 21 step 2).
+# Usage: path-gate [base-ref] [head-ref]     defaults: origin/main...HEAD
+set -uo pipefail
+
+BASE="${1:-origin/main}"
+HEAD="${2:-HEAD}"
+files=$(git diff --name-only "$BASE" "$HEAD")
+[ -n "$files" ] || { echo "no changes"; exit 0; }
+
+# path prefix : what it reaches : why review is scoped to it
+rules='apps/base/|every environment at once|off-ladder: no rung to gate it on
+apps/overlays/prod/|prod|the rung the ladder exists to protect
+clusters/versions.yaml|every local and CI render|the toolchain everyone renders with
+clusters/|what a cluster IS|bindings create and re-point stamps
+infrastructure/|every workload on every cluster|shared platform
+.sops.yaml|decrypt rights|the file is the access-control list
+policy/|the gates|weakening a check must be harder than failing one
+.github/workflows/|the gates|weakening a check must be harder than failing one
+.github/CODEOWNERS|the map itself|who may change who reviews what'
+
+hits=0
+while IFS='|' read -r prefix reach why; do
+  matched=$(echo "$files" | grep "^$prefix" || true)
+  [ -n "$matched" ] || continue
+  hits=$((hits + 1))
+  printf '\nPROTECTED  %s\n  reaches: %s\n  why:     %s\n' "$prefix" "$reach" "$why"
+  echo "$matched" | sed 's/^/    /'
+done <<< "$rules"
+
+echo
+if [ "$hits" -eq 0 ]; then
+  echo "OK  no protected paths touched - this change lands on a rung and climbs by promotion"
+  exit 0
+fi
+echo "$hits protected path group(s) touched. This PR needs its owners, not just an approver."
+echo "Secrets in the diff stay unreadable (ciphertext) - being in the blast radius is not being exposed."

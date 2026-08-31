@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Point a cluster at its folder: install Flux from the pinned CLI, mint the cluster's
+# deploy key, apply the committed sync manifests. What `flux bootstrap` does, minus the
+# part where it pushes to main - nothing does (rule 1.3).
+#
+#   cluster-sync <cluster-path> [--context <ctx>] [--write]
+#
+# <cluster-path> is the folder under clusters/ whose flux-system/ was landed by PR at
+# stage 03 (e.g. clusters/platform/local-01). --write mints a read-write deploy key
+# (stage 14's robot). On a rebuilt cluster the old key of the same title is replaced;
+# the manifests in git - extra components included - take over at the first sync, so
+# there are no bootstrap flags to remember across rebuilds.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+path="${1:?usage: cluster-sync <cluster-path> [--context <ctx>] [--write]}"; shift
+ctx=""; readonly_key=true
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --context) ctx="--context $2"; shift 2 ;;
+    --write)   readonly_key=false; shift ;;
+    *) echo "cluster-sync: unknown argument '$1'" >&2; exit 2 ;;
+  esac
+done
+path="${path%/}"
+sync="$path/flux-system/gotk-sync.yaml"
+[ -f "$sync" ] || { echo "cluster-sync: $sync is not in the tree - stage 03 step 2 lands it by PR" >&2; exit 1; }
+cluster="$(basename "$path")"
+repo="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
+url="$(yq 'select(.kind == "GitRepository") | .spec.url' "$sync")"
+title="flux $cluster"
+
+echo "== flux install ($(flux version --client | tr -d '\n'))"
+flux install $ctx
+
+echo "== deploy key '$title' ($([ "$readonly_key" = true ] && echo read-only || echo READ-WRITE))"
+kubectl $ctx -n flux-system delete secret flux-system --ignore-not-found >/dev/null
+flux create secret git flux-system $ctx --url="$url" >/dev/null     # a keypair, generated in-cluster
+pub="$(kubectl $ctx -n flux-system get secret flux-system -o jsonpath='{.data.identity\.pub}' | base64 -d)"
+for id in $(gh api "repos/$repo/keys" --jq ".[] | select(.title == \"$title\") | .id"); do
+  gh api -X DELETE "repos/$repo/keys/$id" >/dev/null
+  echo "   replaced the previous '$title' key (#$id) - a rebuilt cluster is a new identity"
+done
+gh api -X POST "repos/$repo/keys" -f title="$title" -f key="$pub" -F read_only="$readonly_key" \
+  --jq '"   registered: \(.title)  read_only: \(.read_only)"'
+
+echo "== sync $path"
+kubectl $ctx apply -f "$sync"
+flux reconcile kustomization flux-system --with-source $ctx
+flux get kustomizations $ctx

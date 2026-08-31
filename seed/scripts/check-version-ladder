@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# The version-ladder gate: the fleet spans three Kubernetes minors by design
+# (platform=next, dev=current, prod=stable), and kubectl's +/-1 skew means only
+# the MIDDLE rung reaches all three - so kubectl must track the dev class.
+# Pins live in clusters/versions.yaml; a dev upgrade PR bumps kubectl there too.
+set -uo pipefail
+
+cd "$(dirname "$0")/.."
+VERSIONS=clusters/versions.yaml
+pass=0; fail=0
+ok()  { echo "PASS  $1"; pass=$((pass+1)); }
+bad() { echo "FAIL  $1${2:+  [$2]}"; fail=$((fail+1)); }
+
+echo "== check-version-ladder: one client, three rungs =="
+
+[ -f "$VERSIONS" ] || { echo "SKIP  no $VERSIONS yet - the pin file is born at stage 06, the ladder is declared at stage 07"; exit 0; }
+[ "$(yq -r '.classes // ""' "$VERSIONS")" ] || { echo "SKIP  $VERSIONS has no ladder yet - the classes are declared at stage 07"; exit 0; }
+
+want=$(yq -r '.kubectl' "$VERSIONS")
+dev=$(yq -r '.classes.dev.minor' "$VERSIONS")
+[ "$want" = "$dev" ] \
+  && ok "pinned kubectl ($want) = dev class ($dev) - the middle rung, by rule" \
+  || bad "pinned kubectl = dev class" "versions.yaml is internally inconsistent: kubectl $want, dev $dev"
+
+have=$(kubectl version --client -o json 2>/dev/null | yq -r '.clientVersion.major + "." + .clientVersion.minor')
+if [ "$have" = "$want" ]; then
+  ok "installed kubectl ($have) matches the pin"
+else
+  alt=""
+  for p in $(which -a kubectl 2>/dev/null | sort -u); do
+    v=$("$p" version --client -o json 2>/dev/null | yq -r '.clientVersion.major + "." + .clientVersion.minor')
+    [ "$v" = "$want" ] && { alt="$p"; break; }
+  done
+  if [ -n "$alt" ]; then
+    bad "installed kubectl matches the pin" "the pinned kubectl exists at $alt but $(command -v kubectl) shadows it - fix PATH order"
+  else
+    bad "installed kubectl matches the pin" "have $have at $(command -v kubectl), want $want.x - install: curl -Lo ~/.local/bin/kubectl https://dl.k8s.io/release/\$(curl -sL https://dl.k8s.io/release/stable-$want.txt)/bin/linux/amd64/kubectl && chmod +x ~/.local/bin/kubectl"
+  fi
+fi
+
+for class in platform dev prod; do
+  minor=$(yq -r ".classes.$class.minor" "$VERSIONS")
+  skew=$(( ${want#*.} - ${minor#*.} ))
+  [ "${skew#-}" -le 1 ] \
+    && ok "$class ($minor) within +/-1 of kubectl ($want)" \
+    || bad "$class ($minor) within +/-1 of kubectl ($want)" "the ladder has stretched - a rung missed its upgrade"
+done
+
+# live clusters, when present: each runs its class's pinned minor
+for c in ggp-local-01:platform ggp-dev-01:dev ggp-prod-01:prod; do
+  name=${c%%:*}; class=${c#*:}
+  kind get clusters 2>/dev/null | grep -qx "$name" || continue
+  got=$(kubectl --context "kind-$name" version -o json 2>/dev/null | \
+    yq -r '.serverVersion.major + "." + .serverVersion.minor')
+  minor=$(yq -r ".classes.$class.minor" "$VERSIONS")
+  [ "$got" = "$minor" ] \
+    && ok "live $name runs its class pin ($minor)" \
+    || bad "live $name runs its class pin" "cluster: ${got:-unreachable}, pin: $minor - rebuild with CLASS=$class ./scripts/cluster-up"
+done
+
+echo
+echo "check-version-ladder: $pass passed, $fail failed"
+[ "$fail" -eq 0 ]

@@ -1,0 +1,11 @@
+
+# <type>(<scope>): <description>          # <=72 chars, imperative, no trailing period
+#
+#   domain    pin promote bind rotate access policy break
+#   standard  feat fix docs refactor test ci chore revert
+#   scope     the BLAST RADIUS - stamp | cluster | class | tree
+#             see appendices/commit-convention.md in the course repo
+#
+# Why, not what. The diff already says what.
+#
+# Refs: #9            the work item this change advances - required on every PR

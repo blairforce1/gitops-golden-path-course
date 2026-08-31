@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# The main ruleset, amended - never replaced. Stage 00 created it; later stages add one
+# requirement each, and this is how, so the JSON is written once and the growth is a log.
+# Stage 00 also created the tags ruleset (immutable once created); it is never amended.
+#
+#   ruleset show                       every ruleset: what main requires, that tags are
+#                                      permanent, and who may bypass (nobody)
+#   ruleset require-check <name>...    status checks that must pass before a merge (a job's
+#                                      name in .github/workflows/*.yaml is its check name)
+#   ruleset require-owners             code-owner review on the paths CODEOWNERS names
+#
+# Checks are not "strict" (the branch need not be up to date with main): a solo repo and
+# the stage-14 robot would otherwise stall every time main moved under an open PR.
+set -euo pipefail
+die() { printf 'ruleset: %s\n' "$1" >&2; exit 1; }
+repo="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
+id="$(gh api "repos/$repo/rulesets" --jq '.[] | select(.name == "main") | .id')"
+[ -n "$id" ] || die "no ruleset named 'main' on $repo - stage 00 step 1 creates it"
+current="$(gh api "repos/$repo/rulesets/$id")"
+
+put() { # send back the same ruleset with amended rules
+  printf '%s' "$1" | jq '{name, target, enforcement, conditions, bypass_actors: (.bypass_actors // []), rules}' |
+    gh api -X PUT "repos/$repo/rulesets/$id" --input - >/dev/null
+  printf '%s' "$1" | jq -r '.rules[] | "  \(.type)\(if .parameters then "  " + (.parameters | tostring) else "" end)"'
+}
+
+case "${1:-}" in
+  show)
+    for rid in $(gh api "repos/$repo/rulesets" --jq '.[].id'); do
+      gh api "repos/$repo/rulesets/$rid" | jq -r '"\(.name) (\(.target))  enforcement: \(.enforcement)  bypass: \(if (.bypass_actors // []) == [] then "nobody" else (.bypass_actors | tostring) end)",
+        (.rules[] | "  \(.type)\(if .parameters then "  " + (.parameters | tostring) else "" end)")'
+    done ;;
+  require-check)
+    shift; [ $# -gt 0 ] || die 'usage: ruleset require-check <name>...'
+    checks="$(printf '%s\n' "$@" | jq -R . | jq -s .)"
+    put "$(printf '%s' "$current" | jq --argjson c "$checks" '
+      .rules |= (if any(.[]; .type == "required_status_checks")
+        then map(if .type == "required_status_checks"
+                 then .parameters.required_status_checks |= ((. + ($c | map({context: .}))) | unique_by(.context))
+                 else . end)
+        else . + [{type: "required_status_checks",
+                   parameters: {strict_required_status_checks_policy: false,
+                                required_status_checks: ($c | map({context: .}))}}]
+        end)')" ;;
+  require-owners)
+    put "$(printf '%s' "$current" | jq '
+      .rules |= map(if .type == "pull_request" then .parameters.require_code_owner_review = true else . end)')" ;;
+  *) die 'usage: ruleset show | require-check <name>... | require-owners' ;;
+esac

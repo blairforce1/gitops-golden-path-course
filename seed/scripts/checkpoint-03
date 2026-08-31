@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Stage 03 checkpoint: live checks - the cluster pulls its state from git and machinery owns it.
+# Every line is PASS/FAIL + what it means; exits non-zero if anything failed.
+# Counterpart to checkpoint-02 (which judges renders); also the act checkpoint's cold-start stop condition.
+set -uo pipefail
+
+pass=0; fail=0
+ok()  { echo "PASS  $1"; pass=$((pass+1)); }
+bad() { echo "FAIL  $1${2:+  [$2]}"; fail=$((fail+1)); }
+
+echo "== checkpoint-03: the cluster pulls its state from git =="
+
+chk=$(flux check 2>&1)
+if [ $? -eq 0 ]; then
+  ok "flux check: all checks passed (the CLI-version ✗ advisory is the AKS pin, not a failure)"
+else
+  bad "flux check" "run it yourself for detail"
+fi
+
+dist=$(echo "$chk" | grep -oE 'distribution: flux-v[0-9.]+' | grep -oE '[0-9.]+')
+cli=$(flux --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+[ -n "$dist" ] && [ "$dist" = "$cli" ] && ok "cluster distribution matches CLI (v$cli - the pin holds on both sides)" \
+                                       || bad "cluster distribution matches CLI" "cluster: ${dist:-?}, cli: ${cli:-?}"
+
+for k in flux-system app-dev; do
+  s=$(kubectl -n flux-system get kustomization "$k" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+  [ "$s" = "True" ] && ok "kustomization $k Ready=True" || bad "kustomization $k Ready=True" "got: ${s:-absent}"
+done
+
+rev=$(kubectl -n flux-system get kustomization app-dev -o jsonpath='{.status.lastAppliedRevision}' 2>/dev/null)
+head=$(git rev-parse HEAD)
+[ "${rev##*:}" = "$head" ] && ok "app-dev applied revision = local HEAD (${head:0:7} - the git<->runtime binding)" \
+  || bad "app-dev applied revision = local HEAD" "cluster: ${rev:-none}, local: ${head:0:7} - unpushed/unpulled commits, or interval not yet elapsed"
+
+owner=$(kubectl -n ggp get deploy app -o jsonpath='{.metadata.labels.kustomize\.toolkit\.fluxcd\.io/name}' 2>/dev/null)
+[ "$owner" = "app-dev" ] && ok "app Deployment carries Flux ownership labels (deployed by machinery, not you)" \
+                         || bad "app Deployment carries Flux ownership labels" "got: ${owner:-none}"
+
+for d in app azurite; do
+  s=$(kubectl -n ggp get deploy "$d" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+  [ "$s" = "True" ] && ok "$d Deployment Available" || bad "$d Deployment Available" "got: ${s:-absent}"
+done
+
+r=$(kubectl -n ggp get deploy app -o jsonpath='{.spec.replicas}' 2>/dev/null)
+[ "$r" = "1" ] && ok "app replicas = 1 (canonical end state - section 5's bump was reverted)" \
+               || bad "app replicas = 1" "got: ${r:-absent}"
+
+kubectl -n ggp port-forward svc/app 18080:8080 >/dev/null 2>&1 &
+pf=$!
+up=false
+for i in $(seq 1 20); do curl -sf localhost:18080/healthz >/dev/null 2>&1 && { up=true; break; }; sleep 0.5; done
+put=$(curl -si -X PUT localhost:18080/notes/cp03 -d 'roundtrip' 2>/dev/null | head -1)
+got=$(curl -s localhost:18080/notes/cp03 2>/dev/null)
+if $up && echo "$put" | grep -q 204 && [ "$got" = "roundtrip" ]; then
+  ok "blob round-trip (PUT then GET through app -> azurite)"
+else
+  bad "blob round-trip" "forward up: $up, PUT: ${put:-none}, GET: ${got:-none}"
+fi
+kill "$pf" 2>/dev/null
+
+echo
+echo "checkpoint-03: $pass passed, $fail failed"
+[ "$fail" -eq 0 ]

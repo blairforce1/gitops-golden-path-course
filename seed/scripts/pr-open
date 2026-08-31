@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Open a PR from the staged changes - and stop there.
+#
+#   pr-open <branch> "<subject>" [body-file]      (body on stdin when no file is given)
+#
+# The first four steps of rule 2.4 - branch, commit, push, open - and never the fifth.
+# Merging is your line, after you have read the diff:
+#   gh pr merge --merge --delete-branch && git switch main && git pull
+# The subject and body are linted by commit-gate before anything is created, because the
+# subject becomes the merge commit on main (merge_commit_title=PR_TITLE) and the body its
+# record (merge_commit_message=PR_BODY). An empty body is refused: a PR that says nothing
+# is not a deployment record - and a body that cites no open work item (Refs:/Closes:,
+# rule 2.5) is refused too: a change nobody asked for. The branch name follows
+# <type>/<issue>/<slug> (rule 2.4), and both segments are checked against the PR:
+# the type against the subject, the issue against the trailer.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+die() { printf 'pr-open: %s\n' "$1" >&2; exit 1; }
+
+branch="${1:?usage: pr-open <branch> \"<subject>\" [body-file]}"
+subject="${2:?usage: pr-open <branch> \"<subject>\" [body-file]}"
+bodyfile="${3:--}"
+
+[ "$(git branch --show-current)" = main ] || die "start from main - a PR branches off the thing it will merge into"
+git diff --cached --quiet && die "nothing staged - git add what the PR should carry"
+git rev-parse --verify -q "refs/heads/$branch" >/dev/null && die "branch '$branch' already exists - it should have been deleted on merge"
+[[ "$branch" =~ ^([a-z]+)/([0-9]+)/[a-z0-9][a-zA-Z0-9._-]*$ ]] \
+  || die "branch '$branch' is not <type>/<issue>/<slug> (rule 2.4) - e.g. feat/3/overlays"
+btype="${BASH_REMATCH[1]}" bissue="${BASH_REMATCH[2]}"
+[[ "$subject" =~ ^$btype[\(:!] ]] \
+  || die "branch type '$btype' does not match the subject's type - the branch carries the same vocabulary (rule 2.4)"
+body="$(cat "$bodyfile")"
+[ -n "$body" ] || die "no body - the PR body is the deployment record (rule 2.2)"
+grep -E '^(Closes|Refs): ' <<<"$body" | grep -qE "#$bissue([^0-9]|$)" \
+  || die "branch cites work item #$bissue but the body's Refs:/Closes: trailer does not (rule 2.4)"
+./scripts/commit-gate --subject "$subject" "$body" || die "the subject or body fails the commit convention - fix it before it becomes a commit on main"
+./scripts/issue-gate "$body" || die "the body must cite an open work item in a Refs:/Closes: trailer (rule 2.5)"
+
+git switch -q -c "$branch"
+git commit -q -m "$subject" -m "$body"
+git push -q -u origin "$branch"
+gh pr create --title "$subject" --body "$body"
+echo
+gh pr diff
+echo
+echo "Read the diff. Then, and only then:  gh pr merge --merge --delete-branch && git switch main && git pull"

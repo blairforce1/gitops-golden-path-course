@@ -1,0 +1,6 @@
+extends: existence
+message: "Em dash. Restructure with a comma, period, or colon; in code comments use ' - '."
+level: error
+scope: raw
+raw:
+  - '—'

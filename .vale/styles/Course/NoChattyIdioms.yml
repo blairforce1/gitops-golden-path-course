@@ -1,0 +1,8 @@
+extends: existence
+message: "Chatty idiom: '%s'. Say 'Remember this for later', or nothing."
+level: error
+ignorecase: true
+tokens:
+  - 'file that away'
+  - 'let''s dive'
+  - 'i hope this helps'

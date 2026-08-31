@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Stage 06 checkpoint: secrets are git citizens - encrypted at rest, class-scoped, decrypted only in-cluster.
+# Every line is PASS/FAIL + what it means; exits non-zero if anything failed.
+set -uo pipefail
+
+CTX="${CTX:-kind-ggp-local-01}"
+pass=0; fail=0
+ok()  { echo "PASS  $1"; pass=$((pass+1)); }
+bad() { echo "FAIL  $1${2:+  [$2]}"; fail=$((fail+1)); }
+
+echo "== checkpoint-06: the workflow is the protection =="
+
+[ -f .sops.yaml ] && ok ".sops.yaml exists (the encryption policy, in git)" \
+  || bad ".sops.yaml exists"
+
+plain=0; unenc=""
+while IFS= read -r f; do
+  grep -q 'ENC\[' "$f" || { plain=$((plain+1)); unenc="$unenc $f"; }
+done < <(find . -path '*/secrets/*.secret.yaml' -print)
+[ "$plain" -eq 0 ] && ok "every */secrets/*.secret.yaml is SOPS-encrypted (the debt register holds ciphertext only)" \
+  || bad "every */secrets/*.secret.yaml is SOPS-encrypted" "plaintext:$unenc"
+
+grep -rq 'AccountKey=Eby8' apps clusters infrastructure 2>/dev/null \
+  && bad "no plaintext connection string outside stage-01/02 history" "found in working tree" \
+  || ok "no plaintext connection string in the working tree (stage-02's debt is paid)"
+
+dec=$(yq '.spec.decryption.provider' clusters/platform/local-01/resources/app-dev.kustomization.yaml 2>/dev/null)
+[ "$dec" = "sops" ] && ok "app-dev stamp declares decryption (decryption is the consumer's property)" \
+  || bad "app-dev stamp declares decryption" "got: ${dec:-none}"
+
+grep -q '^- secrets$' clusters/platform/local-01/kustomization.yaml 2>/dev/null \
+  && bad "cluster root excludes secrets/" "the bootstrap stamp has no decryption - ciphertext on its path goes red" \
+  || ok "cluster root is explicit and excludes secrets/ (only the decrypting stamp reads ciphertext)"
+
+st=$(kubectl --context "$CTX" -n flux-system get kustomization cluster-secrets \
+  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+[ "$st" = "True" ] && ok "kustomization cluster-secrets Ready (decrypt-and-apply works end to end)" \
+  || bad "kustomization cluster-secrets Ready" "got: ${st:-absent} - sops-age root key missing?"
+
+kubectl --context "$CTX" -n flux-system get alert cluster-secrets-status >/dev/null 2>&1 \
+  && ok "Alert covers the cluster-secrets stamp (decryption failures are the loud kind)" \
+  || bad "Alert covers the cluster-secrets stamp" "eventSources is an allowlist - a decrypt failure would be silent and green"
+
+owner=$(kubectl --context "$CTX" -n flux-system get secret github-status-token \
+  -o jsonpath='{.metadata.labels.kustomize\.toolkit\.fluxcd\.io/name}' 2>/dev/null)
+[ "$owner" = "cluster-secrets" ] && ok "token secret owned by Flux (the stage-04 IOU is paid - git recreates it)" \
+  || bad "token secret owned by Flux" "owner: ${owner:-none/imperative} - delete the hand-made one and reconcile"
+
+kubectl --context "$CTX" -n ggp get secret app-secrets >/dev/null 2>&1 \
+  && ok "app-secrets exists in-cluster (decrypted from the overlay's secrets/)" \
+  || bad "app-secrets exists in-cluster"
+
+echo
+echo "checkpoint-06: $pass passed, $fail failed"
+[ "$fail" -eq 0 ]

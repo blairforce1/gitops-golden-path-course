@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# The auditor's dossier for one commit, from durable artifacts only.
+#
+# The question this answers, in the checkpoint's words: "between the break and the restore,
+# what was prod actually running, who fixed it, and how do you know dev was unaffected?"
+# Memory and scrollback are not evidence. Git, the commit statuses, and the cluster's own
+# reported revision are - and all three outlive everyone who was on the call.
+#
+# It derives the blast radius from the commit itself: whichever status context went red
+# names the stamp and the cluster (kustomization/<stamp>/<cluster>), which is the identifier
+# alignment rule paying rent - one string, and no lookup table between the alert and the file.
+#
+# Usage: evidence <sha|subject-prefix> [stamp] [kube-context]
+#   e.g. evidence 9470bb4
+#        evidence 'break(app-prod): '
+set -uo pipefail
+
+SEL="${1:?usage: evidence <sha|subject-prefix> [stamp] [kube-context]}"
+STAMP="${2:-}"; KCTX="${3:-}"
+CLUSTER_PREFIX="${EVIDENCE_CLUSTER_PREFIX:-kind-ggp-}"
+
+# Accept a sha or a subject prefix. Prefix-anchored on the subject field, so a revert -
+# which quotes the subject it undoes INSIDE its own - can never win.
+if git cat-file -e "${SEL}^{commit}" 2>/dev/null; then
+  SHA=$(git rev-parse --short "$SEL")
+else
+  SHA=$(git log --max-count=500 --format='%h%x09%s' \
+        | awk -F'\t' -v m="$SEL" 'index($2, m) == 1 { print $1; exit }')
+  [ -n "$SHA" ] || { echo "FAIL  no commit is '$SEL', nor has a subject starting with it"; exit 1; }
+fi
+
+hdr() { printf '\n%s\n%s\n' "$1" "$(printf '%.0s-' $(seq ${#1}))"; }
+kv()  { printf '  %-14s %s\n' "$1" "$2"; }
+
+STATUSES=$(gh api "repos/{owner}/{repo}/commits/$SHA/statuses" --paginate 2>/dev/null)
+[ -n "$STATUSES" ] || { echo "FAIL  no commit statuses on $SHA  [pushed? notifications wired (stage 04)?]"; exit 1; }
+
+# The red context names the blast radius: kustomization/<stamp>/<cluster>
+if [ -z "$STAMP" ]; then
+  red=$(printf '%s' "$STATUSES" | jq -r 'sort_by(.created_at) | reverse
+        | unique_by(.context) | map(select(.state=="failure")) | .[0].context // empty')
+  if [ -n "$red" ]; then STAMP=${red#kustomization/}; STAMP=${STAMP%%/*}
+                         CLUSTER=${red##*/}; [ -z "$KCTX" ] && KCTX="${CLUSTER_PREFIX}${CLUSTER}"; fi
+fi
+
+hdr "THE CHANGE"
+kv "commit"    "$(git log -1 --format='%h  %s' "$SHA")"
+kv "author"    "$(git log -1 --format='%an <%ae>' "$SHA")"
+kv "committed" "$(git log -1 --format='%cI' "$SHA")"
+# a merge carries no diff of its own - diff against the first parent, the PR's whole change
+kv "files"     "$(git diff-tree --no-commit-id --name-only -r "$SHA^" "$SHA" | tr '\n' ' ')"
+[ -n "${STAMP:-}" ] && kv "blast radius" "$STAMP on ${CLUSTER:-?}  (from the status context that went red)"
+
+hdr "WHO TOUCHED THIS PATH AFTERWARDS"
+paths=$(git diff-tree --no-commit-id --name-only -r "$SHA^" "$SHA" | sed 's|/[^/]*$||' | sort -u)
+if [ -n "$paths" ]; then
+  # git's --format has no printf padding (%-52s prints a literal "52s"), so align in awk
+  # shellcheck disable=SC2086
+  git log --format='%h%x09%cI%x09%s%x09%an' "$SHA^..HEAD" -- $paths \
+    | awk -F'\t' '{ printf "  %-9s %-26s %-52s %s\n", $1, $2, substr($3,1,52), $4 }'
+else
+  echo "  (the commit touched no files)"
+fi
+
+hdr "WHAT THE FLEET SAID, IN ORDER"
+printf '%s' "$STATUSES" | jq -r 'sort_by(.created_at) | .[]
+  | "  \(.created_at)  \(.state|(.+"        ")[0:8])  \(.context)  \(.description // "")"'
+echo
+printf '%s' "$STATUSES" | jq -r 'sort_by(.created_at) | reverse | unique_by(.context)
+  | group_by(.state) | map("  \(.[0].state): \(length)") | .[]'
+echo "  (the /status endpoint shows only this last line - the latest per context. The"
+echo "   sequence above needs /statuses, and the sequence is what shows a green that was"
+echo "   posted about a revision the cluster had not applied yet.)"
+
+if [ -n "${STAMP:-}" ] && [ -n "${KCTX:-}" ]; then
+  hdr "WHAT THAT CLUSTER ACTUALLY APPLIED"
+  applied=$(kubectl --context "$KCTX" -n flux-system get kustomization "$STAMP" \
+              -o jsonpath='{.status.lastAppliedRevision}' 2>/dev/null | sed 's/.*sha1://')
+  if [ -n "$applied" ]; then
+    kv "now running" "$(git log -1 --format='%h  %s' "$applied" 2>/dev/null || echo "${applied:0:7}  (not in this clone)")"
+    if git merge-base --is-ancestor "$SHA" "$applied" 2>/dev/null; then
+      kv "verdict" "this commit is an ancestor of what the cluster runs now"
+      kv ""        "(true after a revert too - the revert is also an ancestor. What the"
+      kv ""        " cluster served DURING the failure is the status sequence above.)"
+    else
+      kv "verdict" "this commit is NOT in what the cluster runs - it never took effect"
+    fi
+  else
+    kv "now running" "(stamp $STAMP not found on $KCTX)"
+  fi
+fi
+
+hdr "THE ANSWER, IN ENGLISH"
+echo "  $(git log -1 --format='%an' "$SHA") changed ${STAMP:-the config} on $(git log -1 --format='%cI' "$SHA" | cut -dT -f1)."
+if [ -n "${STAMP:-}" ]; then
+  echo "  The fleet reconciled that commit everywhere; only ${CLUSTER:-one cluster} reported a"
+  echo "  failure, because only its render changed - reconcile scope is the repo, change"
+  echo "  scope is the paths the commit touched."
+  if printf '%s' "$STATUSES" | jq -e 'map(select(.state=="failure" and (.description // "" | test("health")))) | length > 0' >/dev/null; then
+    echo "  The failure was a health check, not an apply error - which is the whole point:"
+    echo "  the stamp failed and the workload did not. The cluster kept serving the last"
+    echo "  revision that passed, so the artifacts prove a negative (the bad version never"
+    echo "  ran) without anyone having been watching."
+  fi
+fi
+echo

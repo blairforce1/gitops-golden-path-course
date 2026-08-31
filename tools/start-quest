@@ -1,0 +1,193 @@
+#!/usr/bin/env bash
+# Raise the work item for a side quest, on demand - quests are never seeded up front.
+#
+#   start-quest <quest> <owner>/<repo>       raise the quest's issue in the config repo
+#   start-quest --list                       name the quests and what each raises
+#
+# Why on demand: the stage backlog is positional (#1..#44, tools/seed-backlog), so quest
+# issues take whatever number is next in YOUR repo and the course never cites them
+# literally - the quest doc says "the issue you just raised". The drills arrive shaped
+# like the incident they simulate: a sev0 bug against the platform, because the drill's
+# PRs should ride the same machinery a real incident's would (Refs: the incident,
+# rule 2.5; closed by hand when the evidence is in, never by a merge).
+#
+# Refuses to run before the backlog is seeded: an early issue would shift every stage
+# number after it.
+set -euo pipefail
+die() { printf 'start-quest: %s\n' "$1" >&2; exit 1; }
+
+list() {
+  cat <<'EOF'
+migrate-base-config  quest       A base change staged as a migration overlay: rung by rung, absorbed, null-opped, references gone
+red-x             quest          Red-status reflexes: incident issue, drafted revert, paused robot, the Environments mirror
+breach-rotation   sev0 incident  A clone and its age key presumed compromised; rotate and revoke everything, prove it
+break-glass       sev0 incident  The change machinery itself is the outage; bypass loudly, restore, prove the restore
+audit-drill       quest          The auditor's questions, answered from git, statuses and the backlog
+oci-artifacts     quest          From git-path reconciliation to signed per-cluster config artifacts
+pre-approved-pr   quest          The review pyramid: taxonomy, shape, risk and quorum gates, then AI review, then one small human decision
+EOF
+}
+
+[ "${1:-}" = "--list" ] && { list; exit 0; }
+quest="${1:?usage: start-quest <quest> <owner>/<repo>   (or --list)}"
+repo="${2:?usage: start-quest <quest> <owner>/<repo>}"
+
+case "$quest" in
+  migrate-base-config)
+    labels="quest"
+    title="Quest: migrate a base change through expand/contract"
+    body=$(cat <<'EOF'
+## Scenario
+A base/ improvement must reach every cluster, and base/ takes only empty rendered
+diffs (rule 5.4). Stage the change as a migration overlay and carry it through the
+whole lifecycle: overlay, rollout rung by rung with soak, fold into base, null-op,
+references removed.
+
+## Required actions
+- [ ] The change enters as an overlay patch on the entry rung, by PR
+- [ ] Promote rung by rung on evidence; the rendered diff shrinks at every step
+- [ ] Fold into base: the absorption PR's rendered diff is empty
+- [ ] Null-op the overlay, then remove the references, as separate PRs
+- [ ] Ship the age nag: a migration overlay past its age budget fails CI
+
+## Evidence
+Every PR cites this issue (Refs). Close it by hand when the last reference is gone
+and the age nag is live - a silently stalled migration is the failure this quest
+exists to prevent.
+EOF
+) ;;
+  breach-rotation)
+    labels="quest,incident,sev0"
+    title="SEV0: laptop with a full clone and its age key presumed compromised (breach rotation drill)"
+    body=$(cat <<'EOF'
+## Scenario
+A laptop holding a full clone of this repo and its owner's age key is presumed
+compromised. Treat everything the laptop could hold as burned. The clock is running.
+
+## Required actions
+- [ ] Inventory what the clone yields (the leak-posture appendix's question, answered concretely)
+- [ ] Remove the compromised principal's recipient and re-wrap
+- [ ] Rotate every class key, re-wrap all secrets
+- [ ] Re-mint the deploy key
+- [ ] Roll the robot's token forward
+- [ ] Prove it: the old key decrypts nothing current
+
+## Evidence
+Every action above lands as a PR citing this issue (Refs). Close this issue by hand
+when the proof is in - the merge is not the verification.
+EOF
+) ;;
+  audit-drill)
+    labels="quest,audit"
+    title="Audit: evidence request against the change record (audit drill)"
+    body=$(cat <<'EOF'
+## Scenario
+An auditor asks: every production change in the window, who approved each, what
+evidence gated it, that nothing bypassed review, and what ran on a given date.
+
+## Required actions
+- [ ] Answer each question from git, statuses and this backlog only
+- [ ] Assemble the answers into a dossier committed by PR, citing this issue
+
+## Evidence
+The dossier. No question may be answered from memory.
+EOF
+) ;;
+  break-glass)
+    labels="quest,incident,sev0"
+    title="SEV0: production fix cannot merge - the change machinery is the outage (break-glass drill)"
+    body=$(cat <<'BODY'
+## Scenario
+A production fix must land now. The required checks cannot go green (a forge
+outage, or a check stuck red for reasons that are not the fix), and the ruleset
+refuses the merge. The control plane for changes is the outage.
+
+## Required actions
+- [ ] Declare the bypass here before acting: who, what, why now
+- [ ] Land the fix by the narrowest bypass that works, every step recorded as comments here
+- [ ] Restore the controls to exactly their prior state
+- [ ] Prove the restore: ./scripts/check-repo all PASS, pasted here
+- [ ] Reconcile: the emergency change ends up with a normal merged-PR record, or a PR that re-lands it
+
+## Evidence
+This issue is the incident record. Close it by hand when the ruleset is provably
+back and the change record is whole - the fix landing is not the finish line.
+BODY
+) ;;
+  red-x)
+    labels="quest"
+    title="Quest: when the X goes red (red-status reflexes)"
+    body=$(cat <<'EOF'
+## Scenario
+A red status on a merge commit on main can only mean post-merge reconciliation
+or health failure - CI reds never land. The platform grows reflexes off that
+one signal: everything prepares, nothing decides.
+
+## Required actions
+- [ ] An on-status workflow, proven with a deliberate break; every reflex idempotent per transition
+- [ ] Issue-on-red: one incident per status context, revision and flux events in the body, closed by the green
+- [ ] The drafted revert: pr-revert run by the workflow against the failing merge commit, never merged by it
+- [ ] The robot respects the red: automation merges wait while main's combined status is failure
+- [ ] The Environments mirror: a Deployment per stamp per revision transition, statuses stay canonical
+- [ ] The full drill end to end, MTTR computed from the incident issue's timestamps
+
+## Evidence
+Every PR and issue cites this work item (Refs). Close it by hand when one
+deliberate break produces exactly one incident, one unmerged revert PR, a
+waiting robot and a red environment - and the merge of the revert settles
+every one of them green.
+EOF
+) ;;
+  pre-approved-pr)
+    labels="quest"
+    title="Quest: the pre-approved PR (review pyramid)"
+    body=$(cat <<'EOF'
+## Scenario
+A PR should arrive at the human effectively pre-approved: every reviewable area
+posts a named verdict before anyone looks, and the expensive reviewers (AI, then
+human) run only when everything cheaper is already green.
+
+## Required actions
+- [ ] Change taxonomy: every hunk of the rendered diff classified by kind and field path
+- [ ] Known-shape validation: a domain-typed PR's rendered diff matches the shape its type declares
+- [ ] Resilience linting on the render (PDBs for multi-replica workloads, limits, probes)
+- [ ] A computed risk rating posted as label, comment and status
+- [ ] Risk-routed quorum: a required check stays red until the risk class's approvals exist
+- [ ] AI review gated behind all-green, citing rule numbers and control IDs; transcript kept as an audit artifact
+
+## Evidence
+Every PR cites this issue (Refs). Close it by hand when a known-shape promote PR
+crosses the whole pyramid with a one-line human decision, and the artifacts show why
+that was enough.
+EOF
+) ;;
+  oci-artifacts)
+    labels="quest"
+    title="Quest: OCI-published config artifacts"
+    body=$(printf 'From git-path reconciliation to CI-built, signed, per-cluster config artifacts: the destination the fleet'"'"'s verification spine points at.\n\nPRs advancing this quest cite this issue (Refs). Close it by hand when the quest'"'"'s stop-and-measure passes.') ;;
+  *) die "unknown quest '$quest' - start-quest --list names them" ;;
+esac
+
+# the positional stage backlog must exist first, or this issue shifts every number after it
+last="$("$(dirname "$(readlink -f "$0")")/seed-backlog" --roster | awk 'END{print $1}')"
+gh api "repos/$repo/issues/$last" --jq .number >/dev/null 2>&1 \
+  || die "no issue #$last in $repo - seed the backlog first (stage 00, tools/seed-backlog)"
+
+# refuse a duplicate: one open work item per quest
+n="$(gh issue list -R "$repo" --state open --search "in:title \"$title\"" --json number --jq '.[0].number' 2>/dev/null || true)"
+[ -n "$n" ] && die "already open as #$n - one work item per quest"
+
+# only the labels this quest wears are created, idempotently
+IFS=, ; for l in $labels; do
+  case "$l" in
+    quest)    c=5319E7; d="side quest work item" ;;
+    incident) c=D93F0B; d="simulated or real incident" ;;
+    sev0)     c=B60205; d="drop everything" ;;
+    audit)    c=0E8A16; d="evidence request" ;;
+  esac
+  gh label create "$l" -R "$repo" --color "$c" --description "$d" --force >/dev/null
+done ; unset IFS
+
+url="$(gh issue create -R "$repo" --title "$title" --body "$body" --label "$labels")"
+echo "raised: $url"
+echo "every PR this quest produces ends its body with:  Refs: #${url##*/}"

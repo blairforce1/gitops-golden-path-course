@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Re-seed the config repo's course-owned files after the course changes mid-run - and
+# stop before the merge.
+#
+#   ../gitops-golden-path-course/tools/sync-seed <issue>      (from the config repo root)
+#
+# Stage 00 copies the gates, checkpoints, drills, skills, decisions and templates into
+# the config repo once. When the course repairs one of those files afterwards, the seeded
+# copy drifts. This tool diffs every seeded surface against the course, copies what
+# drifted, stages exactly those paths (never -A: in-flight stage work stays out), and
+# opens the PR through ./scripts/pr-open with a body listing the files and a Refs:
+# trailer citing <issue> - the standing sync work item. Reading the diff and merging
+# stay yours. A verification run needs this; a finished course does not, so it lives in
+# tools/, unseeded.
+set -euo pipefail
+die() { printf 'sync-seed: %s\n' "$1" >&2; exit 1; }
+
+issue="${1:?usage: sync-seed <issue-number>}"
+[[ "$issue" =~ ^[0-9]+$ ]] || die "issue must be a number, e.g. 47"
+
+COURSE="$(cd "$(dirname "$0")/.." && pwd)"
+[ -f "$COURSE/using-the-course.md" ] || die "cannot find the course root above $0"
+top="$(git rev-parse --show-toplevel 2>/dev/null)" || die "not inside a git repository"
+[ "$top" = "$(pwd)" ] || die "run from the config repo root, not a subdirectory"
+[ "$top" != "$COURSE" ] && [ -x scripts/pr-open ] && [ -d .claude/skills ] \
+  || die "this is not the config repo (needs scripts/pr-open and .claude/skills beside a course clone)"
+
+# The seed is a literal image: every path under the course's seed/ lives at the same
+# path here, minus the prefix. One tree, no mapping, nothing to forget.
+map_src() {  # dest -> course-relative source
+  printf 'seed/%s' "$1"
+}
+
+drifted=()
+while IFS= read -r f; do
+  dest="${f#seed/}"
+  diff -q "$COURSE/$f" "$dest" >/dev/null 2>&1 || drifted+=("$dest")
+done < <(git -C "$COURSE" ls-files seed)
+
+# Seeded files the course no longer tracks: reported, never deleted - a later stage may
+# have authored them here, or the course may have retired them. Your call, not this tool's.
+while IFS= read -r f; do
+  printf 'NOTE  %s is here but not in the course - stage-authored, or retired upstream\n' "$f"
+done < <(comm -23 \
+  <(git ls-files scripts decisions .claude/skills | sort) \
+  <(git -C "$COURSE" ls-files 'seed/scripts' 'seed/decisions' 'seed/.claude/skills' | sed 's|^seed/||' | sort))
+
+if [ ${#drifted[@]} -eq 0 ]; then
+  echo "in sync: every seeded file matches the course"
+  exit 0
+fi
+
+echo "drifted (course -> config repo):"
+for dest in "${drifted[@]}"; do
+  printf '  %s\n' "$dest"
+  src="$COURSE/$(map_src "$dest")"
+  mkdir -p "$(dirname "$dest")"
+  cp "$src" "$dest"
+  case "$dest" in scripts/*) chmod +x "$dest";; esac
+done
+
+git add -- "${drifted[@]}"
+
+body="## What is moving
+
+Re-seed of ${#drifted[@]} course-owned file(s) that changed upstream since the last sync:
+
+$(printf -- '- %s\n' "${drifted[@]}")
+
+## Why now
+
+The course repaired these after they were seeded; the copies here drifted.
+
+Refs: #$issue"
+
+printf '%s\n' "$body" | ./scripts/pr-open "chore/$issue/course-sync" "chore(scripts): sync seeded files with the course"
+
+echo
+echo "sync-seed is done; the merge is not. Next:"
+echo "  1. Check the PR diff above - it must show only the files listed."
+echo "  2. Merge it:  gh pr merge --merge --delete-branch && git switch main && git pull"
