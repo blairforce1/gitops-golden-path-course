@@ -42,14 +42,16 @@ kubectl -n flux-system create secret generic sops-age \
 
 > `act-1-drill` and `checkpoint-04` detect the era themselves: the drill pays whichever IOU the repo's state calls for, and the checkpoint reports whether the token is imperative or git-restored.
 
-Wait for the platform, then pull the time out of the artifacts: cluster birth is the `kube-system` namespace's creation stamp; done is `app-dev`'s Ready transition:
+Wait for the platform, then pull the time out of the artifacts: cluster birth is the `kube-system` namespace's creation stamp; done is `app-dev`'s first successful reconcile, read from the stamp's `status.history`. Not from the Ready condition's `lastTransitionTime`: with `wait: true` that flips on every reconcile, so it reads the latest interval tick rather than the first convergence, and the number grows by up to 5m depending on when you look. A history entry's `firstReconciled` is written once:
 
 ```sh
-until ./scripts/checkpoint-03 >/dev/null 2>&1; do sleep 10; done
+echo -n "waiting for the platform (checkpoint-03 passes; usually 1-3m) "
+until ./scripts/checkpoint-03 >/dev/null 2>&1; do printf .; sleep 10; done; echo
 ./scripts/checkpoint-03 && ./scripts/checkpoint-04
 
 t0=$(kubectl get ns kube-system -o jsonpath='{.metadata.creationTimestamp}')
-t1=$(kubectl -n flux-system get kustomization app-dev -o jsonpath='{.status.conditions[?(@.type=="Ready")].lastTransitionTime}')
+t1=$(kubectl -n flux-system get kustomization app-dev -o json \
+  | jq -r '[.status.history[]? | select(.lastReconciledStatus == "ReconciliationSucceeded") | .firstReconciled] | min')
 echo "platform-from-nothing: $(( $(date -d "$t1" +%s) - $(date -d "$t0" +%s) ))s"
 ```
 
@@ -69,8 +71,9 @@ git tag v0.1.1 && git push origin v0.1.1
 
 # the image, not the workflow, is the prerequisite - poll the registry
 # until it exists (~2-3m, multi-arch build):
-until docker manifest inspect $APP_IMAGE:0.1.1 >/dev/null 2>&1; do sleep 10; done
-echo "0.1.1 published"
+echo -n "waiting for the registry to have 0.1.1 "
+until docker manifest inspect $APP_IMAGE:0.1.1 >/dev/null 2>&1; do printf .; sleep 10; done
+echo " published"
 cd -                                # back to the config repo
 ```
 
@@ -218,7 +221,7 @@ Note what *didn't* happen: nobody wrote anything up, yet the story reconstructed
 
 ## AI enhancement
 
-**How.** `run-drill` runs this checkpoint as a game day: it states what "nothing" means here (every kind cluster; git and the root keys survive), runs `act-1-drill` with the flag, watches with the what-to-expect table, measures with `rung-time` and `detect-time`, and writes the pack on the checkpoint's work item with one `audit-evidence` dossier per injected change. `fleet-triage` answers drill 3's "what broke" from the red's context and the stamp's conditions and events.
+**How.** `run-drill` runs this checkpoint as a game day: it states what "nothing" means here (every kind cluster; git and the root keys survive), runs `act-1-drill` with the flag, watches with the what-to-expect table, measures with `rung-time` and `detect-time`, and writes the pack on the checkpoint's work item with one `audit-evidence` dossier per injected change. `fleet-triage` answers drill 3's "what broke" from the red's context and the stamp's conditions and events. Call `run-drill` with the drill (`rebuild act-1`) and the explicit `--yes`; `fleet-triage` with the red's context identifier.
 
 **Why.** A drill's value is the evidence pack, and the pack is where hand-run drills go thin: the numbers get typed from memory and the refusals are not collected. The skill sequences the drill and writes the pack; the drill script and the checkpoint keep the verdicts.
 

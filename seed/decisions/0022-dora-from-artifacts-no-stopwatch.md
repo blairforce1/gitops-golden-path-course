@@ -7,7 +7,7 @@
 
 ## Context
 
-The four DORA metrics are usually claimed from a spreadsheet. The loop's own records (commit timestamps, per-context status `created_at`, condition transitions, metric samples) already contain them. Two wrong computations are easy: counting a stamp's `revision` label changes reports every push as a deployment (a 10× overcount), and averaging per-cluster rates gives a fleet rate no cluster has. One change reaching fifty tenants is not fifty deployments, or the metric scales with customer count. A commit can wear a green the cluster has not earned yet: a reconcile begun before the fetch posts success on the fresh commit while the old workload still runs.
+The four DORA metrics are usually claimed from a spreadsheet. The loop's own records (commit timestamps, per-context status `created_at`, condition transitions, metric samples) already contain them. Two wrong computations are easy: counting a stamp's `revision` label changes reports every push as a deployment (a 10× overcount), and averaging per-cluster rates gives a fleet rate no cluster has. One change reaching fifty tenants is not fifty deployments, or the metric scales with customer count. A commit can wear a green that is not a success: the status provider derives state from event severity, so an info event such as `dependency not ready` posts success on the fresh commit before anything is applied.
 
 ## Decision
 

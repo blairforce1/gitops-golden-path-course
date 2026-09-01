@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Has AKS's support window moved on without the fleet? The ladder's claim -
+# next/current/stable is exactly what a managed cluster may run (stage 07,
+# rule 4.3) - decays silently: kind runs any minor forever, AKS does not, and
+# nothing else fails until Act VIII refuses the version. This gate re-derives
+# the window (scripts/derive-ladder --window) and compares it to the declared
+# ladder. The scrape behind it is fragile by nature, so scrape failures WARN
+# rather than block, same as check-flux-aks-parity.
+set -uo pipefail
+
+cd "$(dirname "$0")/.."
+VERSIONS=clusters/versions.yaml
+pass=0; fail=0
+ok()  { echo "PASS  $1"; pass=$((pass+1)); }
+bad() { echo "FAIL  $1${2:+  [$2]}"; fail=$((fail+1)); }
+
+echo "== check-k8s-aks-parity: the ladder against AKS's window =="
+
+[ -f "$VERSIONS" ] || { echo "SKIP  no $VERSIONS yet - the pin file is born at stage 06, the ladder at stage 07"; exit 0; }
+[ "$(yq -r '.classes // ""' "$VERSIONS")" ] || { echo "SKIP  $VERSIONS has no ladder yet - it is declared at stage 07"; exit 0; }
+
+window=$(scripts/derive-ladder --window 2>/dev/null | tail -1)
+if ! echo "$window" | grep -qE '^1\.[0-9]+ 1\.[0-9]+ 1\.[0-9]+$'; then
+  echo "WARN  could not derive the AKS window (offline, or the calendar page changed) - check manually:"
+  echo "      https://learn.microsoft.com/azure/aks/supported-kubernetes-versions"
+  exit 0
+fi
+newest=${window%% *}
+
+in_window() { echo " $window " | grep -q " $1 "; }
+newer_than_newest() { [ "$(printf '%s\n%s\n' "$newest" "$1" | sort -t. -k2 -n | tail -1)" = "$1" ] && [ "$1" != "$newest" ]; }
+
+for class in prod dev; do
+  minor=$(yq -r ".classes.$class.minor" "$VERSIONS")
+  if in_window "$minor"; then
+    ok "$class ($minor) is inside AKS's window ($window)"
+  else
+    bad "$class ($minor) left AKS's window ($window)" "the ladder is overdue a climb - stage 16, one rung per PR"
+  fi
+done
+
+platform=$(yq -r '.classes.platform.minor' "$VERSIONS")
+if in_window "$platform"; then
+  ok "platform ($platform) is inside AKS's window ($window)"
+elif newer_than_newest "$platform"; then
+  ok "platform ($platform) is ahead of AKS ($newest) - the frontier, legal at the rung nobody misses"
+else
+  bad "platform ($platform) fell behind AKS's window ($window)" "the ladder is overdue a climb - stage 16"
+fi
+
+echo
+[ "$fail" -eq 0 ] && { echo "check-k8s-aks-parity: $pass PASS"; exit 0; }
+echo "check-k8s-aks-parity: $fail FAIL, $pass PASS"
+exit 1

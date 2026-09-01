@@ -7,7 +7,7 @@
 # break, which is the same thing your eyes do on the Grafana panel - one line per change.
 #
 # Deliberately NOT the commit status: a status is a snapshot one reconcile chose to post
-# (drill 2 met one that was green about a revision the cluster had not applied). The
+# (drill 2 met one that was green and said "dependency not ready"). The
 # metric is a continuous sample of the CR itself. Detection is a metric question;
 # attribution is a status question. This script answers the first.
 #
@@ -24,21 +24,21 @@ STAMP="${1:?usage: detect-time <stamp> <kube-context> [break-commit-subject] [wi
 KCTX="${2:?kube context the stamp runs on, e.g. kind-ggp-prod-01}"
 SUBJECT="${3:-break($STAMP): }"          # derived from the grammar; override to disambiguate
 WINDOW="${4:-30m}"                       # how long AFTER the break to look
+# Era check first: the hub is stage 09's. Before it there is no metric store to ask, and
+# "since when" comes from the stamp itself (status.history, its events while they last,
+# the controller log after that) - SKIP, not FAIL.
+[ -d infrastructure/monitoring-hub ] || { echo "SKIP  no monitoring hub in git yet (infrastructure/monitoring-hub lands at stage 09) - read the stamp's status.history and events instead"; exit 0; }
 PORT="${DETECT_TIME_PORT:-19097}"
 STEP=15                                  # resolution of the answer, in seconds
 SUSTAIN="${DETECT_TIME_SUSTAIN:-60}"     # a not-Ready shorter than this is the cascade, not a break
 
 secs() { case "$1" in *h) echo $(( ${1%h} * 3600 ));; *m) echo $(( ${1%m} * 60 ));; *s) echo "${1%s}";; *) echo "$1";; esac; }
 
-# Find the break by its subject, never by HEAD - drill 2's lesson. Matched as a PREFIX of
-# the subject field, anchored at the start by construction. That anchoring is the whole
-# trick: `git revert` writes Revert "<subject>", so the subject it undoes sits inside the
-# line rather than at the start of it - a substring search finds the revert (newer, and
-# the opposite event); a prefix match cannot. awk and not grep, so no grep.patternType
-# setting can reinterpret the parentheses.
-SHA=$(git log --max-count=500 --format='%H%x09%s' \
-      | awk -F'\t' -v m="$SUBJECT" 'index($2, m) == 1 { print $1; exit }')
-[ -n "$SHA" ] || { echo "FAIL  no commit whose subject starts with '$SUBJECT'  [pushed? right branch?]"; exit 1; }
+# Find the break by its subject, never by HEAD - drill 2's lesson. A PREFIX of the subject
+# field, anchored at the start by commit-by-subject: `git revert` writes Revert "<subject>",
+# so the subject it undoes sits inside the line rather than at the start of it, and a
+# substring search would find the revert (newer, and the opposite event).
+SHA=$("$(dirname "$0")/commit-by-subject" --prefix "$SUBJECT") || exit 1
 t0=$(git log -1 --format=%ct "$SHA")
 
 kubectl --context kind-ggp-local-01 -n monitoring port-forward svc/kube-prometheus-stack-prometheus \

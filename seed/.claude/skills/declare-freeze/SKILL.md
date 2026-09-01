@@ -1,5 +1,6 @@
 ---
 name: declare-freeze
+argument-hint: "[<scope> <from>..<to> <reason> <ticket> | lift <id> | nothing, to read the calendar]"
 description: >-
   Declare, shorten or inspect a change freeze as a calendar entry in git (freezes.yaml), checked against the existing calendar and landed by PR. Use when asked to freeze a tenant, a rung or a wave over a window, to lift a freeze early, or to say what is frozen now. Never suspends a reconciler.
 ---

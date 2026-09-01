@@ -1,5 +1,6 @@
 ---
 name: onboard-tenant
+argument-hint: "[tenant name or id] [rungs]"
 description: >-
   Onboard a tenant as a replica across the rungs: the tenant leaf per environment, one stamp per (cluster, tenant), the tenant's secret boundary and key, code owners, and the SLO dimension, as one PR with the seven homes of the identifier listed and the isolation proofs. Use when asked to add a tenant, to say what a new tenant needs, or to review a tenant's isolation.
 ---

@@ -17,6 +17,15 @@ for f in clusters/platform/local-01/resources/app-dev.kustomization.yaml \
     || bad "${f#clusters/}: dependsOn declared" "got ${n:-0} entries"
 done
 
+# every stamp that decrypts retries a failure fast: without retryInterval a missing Secret
+# or a not-yet-Ready dependency waits out the whole interval (the Act II rebuild's minutes)
+for f in clusters/*/*/resources/*.kustomization.yaml; do
+  yq -e '.spec.decryption' "$f" >/dev/null 2>&1 || continue
+  r=$(yq '.spec.retryInterval // ""' "$f" 2>/dev/null)
+  [ -n "$r" ] && ok "${f#clusters/}: retryInterval $r (a failed reconcile retries before the sweep)" \
+    || bad "${f#clusters/}: retryInterval declared" "unset - a failure waits out the 5m interval"
+done
+
 for o in dev prod; do
   nonroot=$(kustomize build "apps/overlays/$o" 2>/dev/null | \
     yq 'select(.kind=="Deployment" and .metadata.name=="app") | .spec.template.spec.securityContext.runAsNonRoot')

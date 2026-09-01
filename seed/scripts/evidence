@@ -18,15 +18,16 @@ set -uo pipefail
 SEL="${1:?usage: evidence <sha|subject-prefix> [stamp] [kube-context]}"
 STAMP="${2:-}"; KCTX="${3:-}"
 CLUSTER_PREFIX="${EVIDENCE_CLUSTER_PREFIX:-kind-ggp-}"
+# a kube-context given on the command line names the cluster the same way a status context does
+CLUSTER=""; [ -n "$KCTX" ] && CLUSTER="${KCTX#"$CLUSTER_PREFIX"}"
 
-# Accept a sha or a subject prefix. Prefix-anchored on the subject field, so a revert -
-# which quotes the subject it undoes INSIDE its own - can never win.
+# Accept a sha or a subject prefix. commit-by-subject anchors the prefix on the subject
+# field, so a revert - which quotes the subject it undoes INSIDE its own - can never win.
 if git cat-file -e "${SEL}^{commit}" 2>/dev/null; then
   SHA=$(git rev-parse --short "$SEL")
 else
-  SHA=$(git log --max-count=500 --format='%h%x09%s' \
-        | awk -F'\t' -v m="$SEL" 'index($2, m) == 1 { print $1; exit }')
-  [ -n "$SHA" ] || { echo "FAIL  no commit is '$SEL', nor has a subject starting with it"; exit 1; }
+  full=$("$(dirname "$0")/commit-by-subject" --prefix "$SEL") || exit 1
+  SHA=$(git rev-parse --short "$full")
 fi
 
 hdr() { printf '\n%s\n%s\n' "$1" "$(printf '%.0s-' $(seq ${#1}))"; }
@@ -35,10 +36,23 @@ kv()  { printf '  %-14s %s\n' "$1" "$2"; }
 STATUSES=$(gh api "repos/{owner}/{repo}/commits/$SHA/statuses" --paginate 2>/dev/null)
 [ -n "$STATUSES" ] || { echo "FAIL  no commit statuses on $SHA  [pushed? notifications wired (stage 04)?]"; exit 1; }
 
-# The red context names the blast radius: kustomization/<stamp>/<cluster>
+# The red context names the blast radius: kustomization/<stamp>/<cluster>. When nothing
+# went red, look for what went SILENT: a context that posted on the parent commit and
+# never on this one. A stamp that never converged never posts, and on Flux 2.8.x no
+# failure posts at all (notification-controller#1373), so the absence is the red.
+SILENT=""; RADIUS_HOW=""
 if [ -z "$STAMP" ]; then
   red=$(printf '%s' "$STATUSES" | jq -r 'sort_by(.created_at) | reverse
         | unique_by(.context) | map(select(.state=="failure")) | .[0].context // empty')
+  if [ -n "$red" ]; then
+    RADIUS_HOW="from the status context that went red"
+  else
+    parent=$(git rev-parse "$SHA^")
+    red=$(comm -23 \
+      <(gh api "repos/{owner}/{repo}/commits/$parent/statuses" --paginate --jq '.[].context' 2>/dev/null | sort -u) \
+      <(printf '%s' "$STATUSES" | jq -r '.[].context' | sort -u) | head -1)
+    if [ -n "$red" ]; then SILENT="$red"; RADIUS_HOW="from the status context that never posted: it did on the parent commit"; fi
+  fi
   if [ -n "$red" ]; then STAMP=${red#kustomization/}; STAMP=${STAMP%%/*}
                          CLUSTER=${red##*/}; [ -z "$KCTX" ] && KCTX="${CLUSTER_PREFIX}${CLUSTER}"; fi
 fi
@@ -49,14 +63,16 @@ kv "author"    "$(git log -1 --format='%an <%ae>' "$SHA")"
 kv "committed" "$(git log -1 --format='%cI' "$SHA")"
 # a merge carries no diff of its own - diff against the first parent, the PR's whole change
 kv "files"     "$(git diff-tree --no-commit-id --name-only -r "$SHA^" "$SHA" | tr '\n' ' ')"
-[ -n "${STAMP:-}" ] && kv "blast radius" "$STAMP on ${CLUSTER:-?}  (from the status context that went red)"
+[ -n "${STAMP:-}" ] && kv "blast radius" "$STAMP on ${CLUSTER:-?}  (${RADIUS_HOW:-given on the command line})"
 
 hdr "WHO TOUCHED THIS PATH AFTERWARDS"
 paths=$(git diff-tree --no-commit-id --name-only -r "$SHA^" "$SHA" | sed 's|/[^/]*$||' | sort -u)
 if [ -n "$paths" ]; then
-  # git's --format has no printf padding (%-52s prints a literal "52s"), so align in awk
+  # first-parent: the merges that landed on main, not the branch commits beneath them
+  # (which predate their merge and wear no status). git's --format has no printf
+  # padding (%-52s prints a literal "52s"), so align in awk.
   # shellcheck disable=SC2086
-  git log --format='%h%x09%cI%x09%s%x09%an' "$SHA^..HEAD" -- $paths \
+  git log --first-parent --format='%h%x09%cI%x09%s%x09%an' "$SHA^..HEAD" -- $paths \
     | awk -F'\t' '{ printf "  %-9s %-26s %-52s %s\n", $1, $2, substr($3,1,52), $4 }'
 else
   echo "  (the commit touched no files)"
@@ -68,9 +84,10 @@ printf '%s' "$STATUSES" | jq -r 'sort_by(.created_at) | .[]
 echo
 printf '%s' "$STATUSES" | jq -r 'sort_by(.created_at) | reverse | unique_by(.context)
   | group_by(.state) | map("  \(.[0].state): \(length)") | .[]'
+[ -n "$SILENT" ] && echo "  silent: 1   $SILENT  (posted on the parent commit, never on this one)"
 echo "  (the /status endpoint shows only this last line - the latest per context. The"
-echo "   sequence above needs /statuses, and the sequence is what shows a green that was"
-echo "   posted about a revision the cluster had not applied yet.)"
+echo "   sequence above needs /statuses, and the sequence is what shows a green whose"
+echo "   description is not 'reconciliation succeeded'.)"
 
 if [ -n "${STAMP:-}" ] && [ -n "${KCTX:-}" ]; then
   hdr "WHAT THAT CLUSTER ACTUALLY APPLIED"
@@ -88,15 +105,33 @@ if [ -n "${STAMP:-}" ] && [ -n "${KCTX:-}" ]; then
   else
     kv "now running" "(stamp $STAMP not found on $KCTX)"
   fi
+  # The stamp's own verdict, for when no status carried it. Events expire after about
+  # an hour, so this line is present on the day and gone from the dossier later.
+  GAVEUP=$(kubectl --context "$KCTX" -n flux-system get events \
+             --field-selector "involvedObject.name=$STAMP,reason=HealthCheckFailed" -o json 2>/dev/null \
+           | jq -r '[.items[].firstTimestamp] | min // empty')
+  [ -n "$GAVEUP" ] && kv "gave up" "$GAVEUP  (first HealthCheckFailed event; the stamp's own verdict)"
 fi
 
 hdr "THE ANSWER, IN ENGLISH"
 echo "  $(git log -1 --format='%an' "$SHA") changed ${STAMP:-the config} on $(git log -1 --format='%cI' "$SHA" | cut -dT -f1)."
 if [ -n "${STAMP:-}" ]; then
-  echo "  The fleet reconciled that commit everywhere; only ${CLUSTER:-one cluster} reported a"
-  echo "  failure, because only its render changed - reconcile scope is the repo, change"
-  echo "  scope is the paths the commit touched."
-  if printf '%s' "$STATUSES" | jq -e 'map(select(.state=="failure" and (.description // "" | test("health")))) | length > 0' >/dev/null; then
+  if [ -n "$SILENT" ]; then
+    echo "  The fleet reconciled that commit everywhere; only ${CLUSTER:-one cluster} never posted"
+    echo "  on it, because only its render changed and its stamp never converged (on Flux"
+    echo "  2.8.x a failure does not post, so the silence is the red). Reconcile scope is"
+    echo "  the repo, change scope is the paths the commit touched."
+  elif printf '%s' "$STATUSES" | jq -e 'map(select(.state=="failure")) | length > 0' >/dev/null; then
+    echo "  The fleet reconciled that commit everywhere; only ${CLUSTER:-one cluster} reported a"
+    echo "  failure, because only its render changed - reconcile scope is the repo, change"
+    echo "  scope is the paths the commit touched."
+  else
+    # the stamp was given, not derived from a red - say what the statuses hold, and no more
+    echo "  The fleet reconciled that commit everywhere and no context posted a failure on it."
+    echo "  That is not a verdict that ${STAMP} converged (on Flux 2.8.x a failure never posts);"
+    echo "  the verdict is what ${CLUSTER:-the cluster} applied, above."
+  fi
+  if [ -n "${GAVEUP:-}" ] || printf '%s' "$STATUSES" | jq -e 'map(select(.state=="failure" and (.description // "" | test("health")))) | length > 0' >/dev/null; then
     echo "  The failure was a health check, not an apply error - which is the whole point:"
     echo "  the stamp failed and the workload did not. The cluster kept serving the last"
     echo "  revision that passed, so the artifacts prove a negative (the bad version never"

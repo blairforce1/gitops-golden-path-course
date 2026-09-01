@@ -19,9 +19,7 @@ rc=0
 while IFS= read -r subj; do
   [ -n "$subj" ] || continue
   orig=${subj#Revert \"}; orig=${orig%\"}
-  sha=$(git log --max-count=1000 --format='%H%x09%s' \
-        | awk -F'\t' -v m="$orig" '$2 == m { print $1; exit }')
-  [ -n "$sha" ] || continue
+  sha=$("$(dirname "$0")/commit-by-subject" "$orig" 2>/dev/null) || continue
   case "$orig" in *'!:'*) ;; *) continue;; esac
   echo "REVERTING A COMMIT MARKED ! - the author said this will not restore the previous state:"
   echo

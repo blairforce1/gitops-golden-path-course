@@ -8,12 +8,12 @@ Maintainers' ledger, not course material: the date each stage and checkpoint was
 | 01 | 2026-08-29 |
 | 02 | 2026-08-11 |
 | 03 | 2026-08-11 |
-| 04 | 2026-08-11 |
-| Act I checkpoint | 2026-08-12 |
-| 05 | 2026-08-14 |
-| 06 | 2026-08-14 |
-| 07 | 2026-08-19 |
-| Act II checkpoint | - (drills 1, 2, 4 passed on a stage-09 fleet 2026-08-22; drill 3 not yet run) |
+| 04 | 2026-08-31 |
+| Act I checkpoint | 2026-08-31 |
+| 05 | 2026-08-31 |
+| 06 | 2026-08-31 |
+| 07 | 2026-08-31 (the operator's aside, tmux layout and k9s panes, not yet re-verified) |
+| Act II checkpoint | 2026-09-01 |
 | 08 | 2026-08-20 |
 | 09 | 2026-08-22 |
 | 10 | - |

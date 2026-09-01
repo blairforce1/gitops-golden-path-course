@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# Derive the Kubernetes version ladder from its master instead of guessing it.
+# The master is AKS's support window (rule 4.3): the three GA minors AKS runs
+# today become platform=next, dev=current, prod=stable, and the newest
+# kindest/node patch image for each minor comes from the registry. Scrapes the
+# AKS release calendar; a scrape is fragile by nature, so a failed parse names
+# the page and stops - nothing falls back to a guess:
+# https://learn.microsoft.com/azure/aks/supported-kubernetes-versions
+#
+#   derive-ladder            print the derived ladder (read before writing)
+#   derive-ladder --window   print just the three minors, newest first
+#   derive-ladder --write    append the ladder to clusters/versions.yaml
+#                            (refuses if one exists: from stage 07 on the
+#                            ladder moves by PR - stage 16 climbs it)
+set -uo pipefail
+
+cd "$(dirname "$0")/.."
+VERSIONS=clusters/versions.yaml
+CAL_URL="https://learn.microsoft.com/azure/aks/supported-kubernetes-versions"
+mode="${1:-print}"
+
+# The calendar rows carry (minor, GA month, end-of-standard-support month).
+# Supported = GA <= now <= EOL. Exactly three minors is AKS's steady state;
+# anything else means the page changed shape or the scrape broke - stop.
+# Fetch and parse fail separately, so the message names the leg that broke.
+page="${TMPDIR:-/tmp}/derive-ladder-calendar.html"
+if ! curl -sfL -A "Mozilla/5.0" --max-time 20 -o "$page" "$CAL_URL" || [ ! -s "$page" ]; then
+  echo "FAIL  could not fetch the AKS release calendar (offline, blocked, or the URL moved)"
+  echo "      try:  curl -sfLv -A \"Mozilla/5.0\" $CAL_URL >/dev/null"
+  exit 1
+fi
+
+window=$(tr -d '\n' < "$page" | sed 's|</tr>|</tr>\n|g' \
+  | awk -v now="$(date +%Y%m)" '
+    function yyyymm(s,  m) {
+      m = "..JanFebMarAprMayJunJulAugSepOctNovDec"
+      if (s !~ /^[A-Z][a-z][a-z] [0-9][0-9][0-9][0-9]$/) return ""
+      return substr(s, 5) sprintf("%02d", index(m, substr(s, 1, 3)) / 3)
+    }
+    {
+      # split the row on </td>: each piece ends with one cell, whose content
+      # starts after its last <td ...> - nested markup inside cells survives
+      # this and is stripped afterwards
+      n = split($0, parts, /<\/td>/); count = 0; delete c
+      for (i = 1; i < n; i++) {
+        cell = parts[i]
+        if (!sub(/.*<td[^>]*>/, "", cell)) continue
+        gsub(/<[^>]*>/, "", cell); gsub(/&nbsp;/, " ", cell)
+        gsub(/^[ \t]+|[ \t]+$/, "", cell)
+        c[++count] = cell
+      }
+      if (count < 5 || c[1] !~ /^1\.[0-9]+$/) next
+      ga = yyyymm(c[4]); eol = yyyymm(c[5])
+      if (ga != "" && eol != "" && ga <= now && now <= eol) seen[c[1]] = 1
+    }
+    END { for (v in seen) print v }' \
+  | sort -t. -k2 -rn)
+
+count=$(echo "$window" | grep -c . || true)
+if [ "$count" -ne 3 ]; then
+  echo "FAIL  parsed $count supported minor(s) from the AKS release calendar - expected 3"
+  echo "      the page changed shape; it is kept at $page - read the window there and file the fix:"
+  echo "      $CAL_URL"
+  exit 1
+fi
+rm -f "$page"
+
+# Newest patch image per minor, from the registry the clusters pull from.
+image_for() {
+  curl -sf --max-time 20 \
+    "https://hub.docker.com/v2/repositories/kindest/node/tags?page_size=100&name=v$1." \
+    | yq -p json -r '.results[].name' 2>/dev/null \
+    | grep -E "^v$1\.[0-9]+$" | sort -t. -k3 -n | tail -1
+}
+
+set -- $window
+next=$1; current=$2; stable=$3
+img_next=$(image_for "$next"); img_current=$(image_for "$current"); img_stable=$(image_for "$stable")
+for pair in "$next:$img_next" "$current:$img_current" "$stable:$img_stable"; do
+  [ -n "${pair#*:}" ] || { echo "FAIL  no kindest/node image found for ${pair%%:*} - kind trails a new minor; check its release notes"; exit 1; }
+done
+
+echo "AKS support window today: $next $current $stable   (source: the AKS release calendar)"
+echo "  platform  minor $next   node_image kindest/node:$img_next"
+echo "  dev       minor $current   node_image kindest/node:$img_current   (kubectl pins here)"
+echo "  prod      minor $stable   node_image kindest/node:$img_stable"
+
+case "$mode" in
+  print) exit 0 ;;
+  --window) echo "$next $current $stable"; exit 0 ;;
+  --write) ;;
+  *) echo "derive-ladder: unknown argument '$mode' (usage: derive-ladder [--window|--write])" >&2; exit 2 ;;
+esac
+
+[ -f "$VERSIONS" ] || { echo "FAIL  no $VERSIONS - the pin file is born at stage 06"; exit 1; }
+if [ "$(yq -r '.classes // ""' "$VERSIONS")" ]; then
+  echo "FAIL  $VERSIONS already declares a ladder - from stage 07 on it moves by PR (stage 16 climbs it), not by re-derivation"
+  exit 1
+fi
+
+cat >> "$VERSIONS" <<EOF
+# The Kubernetes version ladder - a class fact, pinned in git (rule 5.4).
+# platform tests NEXT, dev is CURRENT, prod is STABLE; upgrades enter at
+# platform, soak, then walk down the ladder one PR per rung (stage 16 climbs it).
+# The three-minor spread matches AKS support (N..N-2); Act VIII holds the fleet to it.
+# kubectl's +/-1 skew across a three-minor fleet means only the middle rung
+# reaches all three - so kubectl pins to the DEV class, and a dev upgrade PR
+# bumps it in the same diff. Enforced by scripts/check-version-ladder.
+# Derived by scripts/derive-ladder: minors from the AKS release calendar,
+# node images from the kindest/node registry. check-k8s-aks-parity watches
+# for the window moving on without the fleet.
+kubectl: "$current"
+classes:
+  platform:
+    minor: "$next"
+    node_image: kindest/node:$img_next
+  dev:
+    minor: "$current"
+    node_image: kindest/node:$img_current
+  prod:
+    minor: "$stable"
+    node_image: kindest/node:$img_stable
+EOF
+echo "ok: ladder written to $VERSIONS"

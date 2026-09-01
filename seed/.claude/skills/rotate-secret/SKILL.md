@@ -1,5 +1,6 @@
 ---
 name: rotate-secret
+argument-hint: "[<class> key | value <name> | recipient <person> | leak]"
 description: >-
   Rotate a class key, a stored secret value, or a recipient (a person's access) in two phases, overlap then retire, with the revocation step at the provider and the roll-forward trailer, landed as PRs. Use when asked to rotate a key or a value, to remove a person's access, or after a suspected leak. Never commits a new value without a revocation plan.
 ---

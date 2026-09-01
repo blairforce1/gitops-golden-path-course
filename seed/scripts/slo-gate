@@ -16,6 +16,13 @@ P95_MAX="${SLO_P95_MAX:-0.3}"
 # (the slo:app_availability:target recording rule), so the promise lives in git
 # in exactly one place. SLO_TARGET overrides for a what-if run.
 
+# Era check first: the SLO is a signature only once stage 09 has put the promise in git.
+# Before that, convergence is the ladder's only signature and this gate has nothing to
+# judge - SKIP, not FAIL, so a promotion made before stage 09 is not refused for a
+# judge that does not exist yet. With the rule present and the hub unreachable, FAIL.
+SLO_RULE="infrastructure/monitoring-hub/resources/app-slo.prometheusrule.yaml"
+[ -f "$SLO_RULE" ] || { echo "SKIP  no SLO in git yet ($SLO_RULE lands at stage 09) - convergence is the only signature"; exit 0; }
+
 # The hub judges the whole fleet. Reach it by port-forward, not by node IP: NodePorts
 # on a kind node are reachable from other containers (that is how the spokes remote-write)
 # but NOT from the host under rootless podman, where container IPs live in a namespace the

@@ -56,6 +56,8 @@ while [ $# -gt 0 ]; do
 done
 case "${BY:-tenant}" in tenant|cluster|stamp) ;; *) echo "FAIL  --by must be tenant|cluster|stamp"; exit 2 ;; esac
 
+# Era check first: the hub is stage 09's; before it the four numbers have no metric side - SKIP, not FAIL.
+[ -d infrastructure/monitoring-hub ] || { echo "SKIP  no monitoring hub in git yet (infrastructure/monitoring-hub lands at stage 09)"; exit 0; }
 PORT="${DORA_PORT:-19098}"
 STEP="${DORA_STEP:-60}"                  # sample resolution, seconds
 SUSTAIN="${DORA_SUSTAIN:-90}"            # a not-Ready shorter than this is the dependency

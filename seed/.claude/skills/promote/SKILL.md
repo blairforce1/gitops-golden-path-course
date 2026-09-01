@@ -1,5 +1,6 @@
 ---
 name: promote
+argument-hint: "[stamp] [target rung, e.g. app-prod]"
 description: >-
   Open a promotion PR that moves a version up one rung on both signatures (the lower rung's green context and a clean SLO window), with the freeze calendar checked, the blast radius rendered, and a body that is a deployment record. Use when asked to promote, to check whether a rung is ready to promote, or to open the promotion PR. Never merges.
 ---
@@ -34,6 +35,8 @@ gh api "repos/{owner}/{repo}/commits/<sha>/statuses" --paginate \
 ```sh
 ./scripts/slo-gate <lower-cluster> [window]
 ```
+
+The SLO judge is built at stage 09, so before it this act has one signature. `slo-gate` says which era it is in its first line: `SKIP` (no SLO rule in git yet) means convergence is the only signature, and the body says so under performance; `FAIL` is a verdict and stops the skill. Do not investigate a FAIL, and do not read the course to decide what the era expects: the repo and the gate's own words are the whole source.
 
 Quote both outputs verbatim into the PR body. Never summarise a gate's output into "checks passed".
 
@@ -77,6 +80,7 @@ Then stop. Print the PR URL and the merge line the human runs after the diff: `g
 
 ## Rules
 
+- The four sections above are the whole procedure, each command once. No checks beyond them (not the app repo's delta, not the git identity, not the course text); a question the gates do not answer is a gap to state in the body, not something to go and find out.
 - Forward only: a pin never moves to an older version by promotion. A rollback is `pr-revert`.
 - Never wire automation at the target rung, and never merge.
 - A red, absent or no-traffic signature stops the skill; the gate's own words are the reason given.

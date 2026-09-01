@@ -1,5 +1,6 @@
 ---
 name: break-glass
+argument-hint: "[stuck check name | "forge down"] [incident item #N, created if absent]"
 description: >-
   Land a production fix when the change machinery itself is the outage (the forge is down, a required check is stuck red), by the narrowest bypass that works, declared on the incident item before acting, with the controls restored and proved afterwards and the change reconciled by PR. Use when asked to bypass a control under incident conditions, or to record a bypass that already happened.
 ---

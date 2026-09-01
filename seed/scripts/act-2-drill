@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# Act II drill runner: the fleet from nothing, unattended, and the number from artifacts.
+# DESTRUCTIVE - it deletes and rebuilds all three kind clusters. Guarded by --yes.
+# "Nothing" here is every kind cluster; what survives is git and the three root keys
+# under ~/.config/gitops-golden-path/age/. Drills 2 to 4 are PRs and queries: the
+# checkpoint runs them by hand and the promote, fleet-triage and audit-evidence skills
+# run them on request; this script is the rebuild they all start from.
+# Timings are extracted from artifacts (namespace creation stamps, the stamps' own
+# reconcile history) - no stopwatch, same rule as act-checkpoint.md.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+if [ "${1:-}" != "--yes" ]; then
+  cat <<EOF
+act-2-drill rebuilds the Act II fleet from nothing. It will:
+  1. DELETE the three kind clusters ggp-local-01, ggp-dev-01 and ggp-prod-01
+  2. recreate them (cluster-up) and bootstrap each from git (cluster-sync)
+  3. pay the surviving IOU: one root key per cluster, from ~/.config/gitops-golden-path/age/
+  4. wait for the fleet to converge and print fleet-from-nothing, measured from artifacts
+Nothing is simulated. Run with --yes to proceed.
+EOF
+  exit 1
+fi
+
+# --- preflight: fail before any damage ---------------------------------------
+for t in flux gh git kind kubectl kustomize; do
+  command -v "$t" >/dev/null || { echo "MISSING: $t" >&2; exit 1; }
+done
+[ -n "$(gh auth token 2>/dev/null)" ] || { echo "no gh token (gh auth login)" >&2; exit 1; }
+[ -z "$(git status --porcelain)" ] || { echo "working tree not clean" >&2; exit 1; }
+[ "$(git branch --show-current)" = main ] || { echo "not on main (the drill rebuilds what main says)" >&2; exit 1; }
+KEYS="$HOME/.config/gitops-golden-path/age"
+for k in local-01 dev prod; do
+  [ -f "$KEYS/$k.agekey" ] || { echo "no root key at $KEYS/$k.agekey (stage 06 for local-01, stage 07 for dev and prod)" >&2; exit 1; }
+done
+git pull --ff-only
+# shellcheck disable=SC1091
+source ./env.sh
+
+# --- helpers ------------------------------------------------------------------
+say() { echo; echo "== $*"; }
+secs() { echo $(( $(date -d "$2" +%s) - $(date -d "$1" +%s) )); }
+wait_for() { # wait_for <timeout-secs> <description> <cmd...>
+  local deadline; deadline=$(( $(date +%s) + $1 )); shift
+  local desc=$1; shift
+  echo -n "waiting for $desc "
+  until "$@" >/dev/null 2>&1; do
+    [ "$(date +%s)" -lt "$deadline" ] || { echo; echo "TIMEOUT: $desc" >&2; exit 1; }
+    printf .; sleep 15
+  done
+  echo " ready"
+}
+
+# --- drill 1: the fleet from nothing --------------------------------------------
+say "drill 1: fleet from nothing"
+for name in ggp-local-01 ggp-dev-01 ggp-prod-01; do CLUSTER_NAME=$name ./scripts/cluster-down; done
+
+CLASS=platform CLUSTER_NAME=ggp-local-01 HTTP_PORT=8080 HTTPS_PORT=8443 ./scripts/cluster-up
+CLASS=dev      CLUSTER_NAME=ggp-dev-01   HTTP_PORT=8081 HTTPS_PORT=8444 ./scripts/cluster-up
+CLASS=prod     CLUSTER_NAME=ggp-prod-01  HTTP_PORT=8082 HTTPS_PORT=8445 ./scripts/cluster-up
+
+./scripts/cluster-sync clusters/platform/local-01 --context kind-ggp-local-01
+./scripts/cluster-sync clusters/dev/dev-01 --context kind-ggp-dev-01
+./scripts/cluster-sync clusters/prod/prod-01 --context kind-ggp-prod-01
+
+# the surviving IOU: one root key per cluster. Each sync above ends with its decrypting
+# stamps False (Secret "sops-age" not found): the key cannot exist before flux install
+# creates its namespace, so it is paid here and the stamps retry on their interval.
+kubectl --context kind-ggp-local-01 -n flux-system create secret generic sops-age \
+  --from-file=age.agekey="$KEYS/local-01.agekey"
+kubectl --context kind-ggp-dev-01 -n flux-system create secret generic sops-age \
+  --from-file=age.agekey="$KEYS/dev.agekey"
+kubectl --context kind-ggp-prod-01 -n flux-system create secret generic sops-age \
+  --from-file=age.agekey="$KEYS/prod.agekey"
+
+wait_for 900 "the fleet to converge (checkpoint-07; the decrypting stamps retry on their interval)" ./scripts/checkpoint-07
+./scripts/checkpoint-05
+./scripts/checkpoint-06
+./scripts/checkpoint-07
+
+# earliest cluster birth to the last app stamp's first successful reconcile anywhere -
+# artifacts, not a stopwatch. status.history, not Ready's lastTransitionTime: with wait: true
+# the Ready condition flips on every reconcile, so lastTransitionTime is the latest 5m tick,
+# and the number would grow by up to one interval depending on when this script happens to
+# read it (drill run 2: 537s read at 11:50Z, 846s from the same fleet at 11:55Z). A history
+# entry's firstReconciled is written once.
+t0=$(for ctx in kind-ggp-local-01 kind-ggp-dev-01 kind-ggp-prod-01; do
+  kubectl --context "$ctx" get ns kube-system -o jsonpath='{.metadata.creationTimestamp}{"\n"}'; done | sort | head -1)
+t1=$(for c in kind-ggp-local-01:app-dev kind-ggp-dev-01:app-dev kind-ggp-prod-01:app-prod; do
+  kubectl --context "${c%%:*}" -n flux-system get kustomization "${c#*:}" -o json \
+    | jq -r '[.status.history[]? | select(.lastReconciledStatus == "ReconciliationSucceeded") | .firstReconciled] | min'
+  done | sort | tail -1)
+D1=$(secs "$t0" "$t1")
+
+say "results (paste-ready for act-checkpoint.md)"
+echo "| Fleet-from-nothing | ${D1}s | $(date +%F) |"
+echo
+# The forge's only record of a rebuild is the deploy keys cluster-sync minted. No commit
+# status is expected: the GitHub provider skips a post identical to the latest one already on
+# the commit (notification-controller, internal/notifier/github.go, duplicateGithubStatus), so
+# a fleet rebuilt to an unchanged main leaves the statuses exactly as the destroyed fleet left
+# them. A checkpoint that counts contexts on HEAD is counting the old fleet's testimony.
+echo "witnessed on the forge by (no status reposts on an unchanged commit):"
+gh api "repos/{owner}/{repo}/keys" \
+  --jq '.[] | select(.title | startswith("flux ")) | "  \(.title)  #\(.id)  created \(.created_at)"'

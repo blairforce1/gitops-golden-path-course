@@ -2,20 +2,31 @@
 # Lead time for one rung of the promotion ladder: from the commit that asked for the
 # change to the commit status reporting it converged - measured honestly.
 #
-# The honesty is the point. Flux posts a status at the end of every reconcile, against
-# whatever the source's HEAD is by then, so a reconcile that began BEFORE the fetch can
-# post "success" on your brand-new commit while the old workload is still running. Read
-# that status and a promotion looks 4 seconds long when it took 35. So: wait until the
-# cluster says it applied THIS revision, wait for the rollout, then read the status.
+# The honesty is the point. A commit status has two states and Flux derives them from an
+# event's severity: an error posts failure, everything else posts success, with the event's
+# reason as the description. "dependency not ready" is info, so a stamp that reconciles a
+# new revision before its dependencies have posts a green on that commit seconds after the
+# merge, before anything is applied. Read that and a promotion looks 4 seconds long when it
+# took 35. So: wait until the cluster says it applied THIS revision, wait for the rollout,
+# then read the one status that says "reconciliation succeeded".
 #
-# Usage: rung-time <sha> <status-context> <kube-context> <stamp>
+# Usage: rung-time <sha-or-subject> <status-context> <kube-context> <stamp>
+#   e.g. rung-time "promote(app-prod): app 0.1.2" kustomization/app-prod/prod-01 kind-ggp-prod-01 app-prod
 set -uo pipefail
 
-SHA="${1:?usage: rung-time <sha> <status-context> <kube-context> <stamp>}"
+SEL="${1:?usage: rung-time <sha-or-subject> <status-context> <kube-context> <stamp>}"
 CTX="${2:?status context, e.g. kustomization/app-prod/prod-01}"
 KCTX="${3:?kube context, e.g. kind-ggp-prod-01}"
 STAMP="${4:?stamp name, e.g. app-prod}"
 BRANCH="${RUNG_BRANCH:-main}"
+
+# A sha, or the commit's subject resolved by commit-by-subject: exact, first-parent, so
+# the answer is the merge commit and never the branch commit that shares its title.
+if git cat-file -e "${SEL}^{commit}" 2>/dev/null; then
+  SHA=$(git rev-parse "$SEL")
+else
+  SHA=$("$(dirname "$0")/commit-by-subject" "$SEL") || exit 1
+fi
 
 t0=$(git log -1 --format=%cI "$SHA") || exit 2
 want="$BRANCH@sha1:$SHA"
@@ -38,8 +49,17 @@ done
 
 kubectl --context "$KCTX" -n ggp rollout status deploy/app --timeout=5m >/dev/null || exit 1
 
-t1=$(gh api "repos/{owner}/{repo}/commits/$SHA/status" \
-  --jq ".statuses[] | select(.context == \"$CTX\") | .created_at" 2>/dev/null)
-[ -n "$t1" ] || { echo "FAIL  no status yet for context $CTX on ${SHA:0:7}"; exit 1; }
+# The success status is posted when the reconcile ends, so it can trail the rollout by a
+# few seconds; and the commit may carry other greens for this context ("dependency not
+# ready" is one), so select by description as well as context.
+t1=""
+for _ in $(seq 1 12); do
+  t1=$(gh api "repos/{owner}/{repo}/commits/$SHA/statuses?per_page=100" \
+    --jq ".[] | select(.context == \"$CTX\" and .description == \"reconciliation succeeded\") | .created_at" \
+    2>/dev/null | tail -1)
+  [ -n "$t1" ] && break
+  sleep 5
+done
+[ -n "$t1" ] || { echo "FAIL  no 'reconciliation succeeded' status yet for context $CTX on ${SHA:0:7}"; exit 1; }
 
 echo "${SHA:0:7}  $CTX: $(( $(date -d "$t1" +%s) - $(date -d "$t0" +%s) ))s"

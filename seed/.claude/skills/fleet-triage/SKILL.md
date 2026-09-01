@@ -1,5 +1,6 @@
 ---
 name: fleet-triage
+argument-hint: "[kustomization/<stamp>/<cluster> | the alert's identifiers | "why hasn't my change appeared"]"
 description: >-
   Diagnose a red or stuck stamp by the four-layer ladder (fetch, build, apply, health) from the identifier in an alert or status, read what the cluster applied and what the fleet said, and recommend the fix as a PR. Use when a change has not appeared, a stamp is not Ready, a commit wears a red, or a dashboard row is red. Reads only; never applies, edits, scales or suspends.
 ---
@@ -28,12 +29,12 @@ gh api "repos/{owner}/{repo}/commits/<sha>/statuses" --paginate \
 ./scripts/detect-time <stamp> <ctx> [break-subject]       # when the question is "since when"
 ```
 
-Read them together: a green status can describe a reconcile of a revision the cluster had not applied yet; the applied revision says what runs; the sequence says when each verdict was posted.
+Read them together: a green status is any non-error event, so read its description (`dependency not ready` and `health checks canceled` are both green); the applied revision says what runs; the sequence says when each verdict was posted. On Flux 2.8.x no failure posts at all, so a context that posted on the parent commit and not on this one is the red. Before stage 09 `detect-time` says `SKIP`, there being no hub; "since when" then comes from the stamp's `status.history` (the first reconcile of the failing render), its events while they last, and the kustomize-controller log after that.
 
 ## 3. Three things that look like failures and are not
 
 - **The dependency cascade.** On every new revision, each stamp with `dependsOn` reports Ready=False with `DependencyNotReady` while its dependency reconciles, so the dashboard reds fleet-wide for one scrape. The discriminator is duration, not colour.
-- **A stale green.** The status was posted about the previous revision. Check `lastAppliedRevision` before believing it.
+- **A green that is not a success.** The provider maps event severity to state, so an info event posts as `success` whatever it says. Read the description; only `reconciliation succeeded` is the verdict, and `lastAppliedRevision` is the fact.
 - **Suspended is not stuck.** `spec.suspend: true` on the stamp means nothing reconciles until a resume; find who set it in the API audit log, if enabled, and treat the resume as a change.
 
 ## 4. The answer

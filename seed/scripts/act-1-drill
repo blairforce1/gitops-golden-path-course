@@ -52,10 +52,17 @@ wait_for() { # wait_for <timeout-secs> <description> <cmd...>
   done
   echo "ready: $desc"
 }
-lead_secs() { # commit stamp -> status created_at, both server/artifact times
-  local t0 t1
+lead_secs() { # lead_secs <sha> [success|failure]: commit stamp -> the app stamp's own status of that state
+  # Every non-error event posts as success, so a green must also say "reconciliation
+  # succeeded"; and the context is selected, never .statuses[0], which is whichever
+  # stamp on the cluster posted last. Both server/artifact times.
+  local t0 t1 want=${2:-success}
   t0=$(git log -1 --format=%cI "$1")
-  t1=$(gh api "repos/$REPO/commits/$1/status" --jq '.statuses[0].created_at')
+  t1=$(gh api "repos/$REPO/commits/$1/statuses?per_page=100" \
+       --jq "[.[] | select((.context | startswith(\"kustomization/app-dev\")) and .state == \"$want\"
+                and (\"$want\" == \"failure\" or .description == \"reconciliation succeeded\"))]
+             | sort_by(.created_at) | .[0].created_at // empty")
+  [ -n "$t1" ] || { echo "no $want status for kustomization/app-dev on ${1:0:7}" >&2; return 1; }
   secs "$t0" "$t1"
 }
 merge_pr() { # the drill is the reviewer here: the diff is the one it just wrote
@@ -86,7 +93,10 @@ else
 fi
 wait_for 900 "platform green (checkpoint-03)" ./scripts/checkpoint-03
 t0=$(kubectl get ns kube-system -o jsonpath='{.metadata.creationTimestamp}')
-t1=$(kubectl -n flux-system get kustomization app-dev -o jsonpath='{.status.conditions[?(@.type=="Ready")].lastTransitionTime}')
+# the stamp's first successful reconcile, from status.history: Ready's lastTransitionTime
+# moves on every reconcile under wait: true, so it would read the latest tick, not the first
+t1=$(kubectl -n flux-system get kustomization app-dev -o json \
+  | jq -r '[.status.history[]? | select(.lastReconciledStatus == "ReconciliationSucceeded") | .firstReconciled] | min')
 D1=$(secs "$t0" "$t1")
 echo "platform-from-nothing: ${D1}s"
 
@@ -112,7 +122,7 @@ Refs: #6
 EOF
 merge_pr
 sha2=$(git rev-parse HEAD)
-wait_for 600 "green status on ${sha2:0:7}" status_is "$sha2" success
+wait_for 600 "app-dev green on ${sha2:0:7}" lead_secs "$sha2"
 D2=$(lead_secs "$sha2")
 echo "merge->green: ${D2}s"
 
@@ -139,8 +149,8 @@ merge_pr
 sha3=$(git rev-parse HEAD)
 # known issue on Flux 2.8.8: no failure status ever posts (notification-controller#1373,
 # fixed in 2.9) - this wait times out there; the red is the expected outcome from 2.9 on
-wait_for 900 "red status on ${sha3:0:7}" status_is "$sha3" failure
-D3=$(lead_secs "$sha3")
+wait_for 900 "app-dev red on ${sha3:0:7}" lead_secs "$sha3" failure
+D3=$(lead_secs "$sha3" failure)
 echo "break->red: ${D3}s"
 # waiting for the detection above IS the pacing: the revert lands >=1 source interval later
 git switch -q -c drill-restore && git revert -m 1 --no-edit HEAD && git push -q -u origin drill-restore
@@ -149,19 +159,18 @@ gh pr create --title "$(git log -1 --format=%s)" --body "Act I drill 3: restore 
 Refs: #6" >/dev/null
 merge_pr
 sha4=$(git rev-parse HEAD)
-wait_for 600 "green status on ${sha4:0:7}" status_is "$sha4" success
+wait_for 600 "app-dev green on ${sha4:0:7}" lead_secs "$sha4"
 D4=$(lead_secs "$sha4")
 echo "revert->green: ${D4}s"
 
 # --- drill 4: the evidence question, answered by query --------------------------
 say "drill 4: the evidence dossier"
-sha=$(git log --first-parent --format='%h%x09%s' \
-      | awk -F'\t' -v m="pin(app-dev): app $IMGTAG" '$2 == m { print $1; exit }')  # whole subject known: exact; first-parent = the merge, not the branch commit
+sha=$(scripts/commit-by-subject "pin(app-dev): app $IMGTAG")  # whole subject known: exact, first-parent = the merge, not the branch commit
 git log -1 --format='change:   %h  %s%nauthor:   %an <%ae>%nwhen:     %cI' "$sha"
 # a merge carries no diff of its own - diff against the first parent, the PR's whole change
 git diff-tree --no-commit-id --stat "$sha^" "$sha" | sed 's/^ */          /'
 gh api "repos/$REPO/commits/$sha/status" \
-  --jq '"outcome:  \(.state)  (\(.statuses[0].context), \(.statuses[0].created_at))"'
+  --jq '.statuses[] | select(.context | startswith("kustomization/app-dev")) | "outcome:  \(.state)  (\(.context), \(.created_at))"'
 rev=$(kubectl -n flux-system get kustomization app-dev -o jsonpath='{.status.lastAppliedRevision}')
 echo "running:  $rev"
 git merge-base --is-ancestor "$sha" "${rev##*:}" \

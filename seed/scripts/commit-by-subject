@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# The sha of the commit whose subject is the one given: how the checkpoints, the drills and
+# the gates find "the change" without guessing from HEAD.
+#
+# Exact, not a substring. `git revert` quotes the subject it undoes, so a substring search
+# finds the revert (newer, and the opposite event) instead of the break, and an unanchored
+# version match finds 0.1.10 when you asked for 0.1.1. awk, not grep, so no grep.patternType
+# setting can reinterpret the parentheses the commit grammar is full of. First-parent, so
+# the answer is the merge commit (the one that wears statuses), never the branch commit
+# that shares its title. GitHub appends " (#N)" to a merge commit's subject even under
+# merge_commit_title: PR_TITLE: a subject given without that suffix matches with the
+# suffix ignored; one given with it (a revert quotes it) matches verbatim.
+#
+# Usage: commit-by-subject <subject>            the commit whose subject is exactly this
+#        commit-by-subject --prefix <subject>   the newest whose subject starts with this
+# Prints the full sha. Exit 1, with a hint on stderr, when nothing matches.
+set -uo pipefail
+
+mode=exact
+if [ "${1:-}" = "--prefix" ]; then mode=prefix; shift; fi
+SUBJECT="${1:?usage: commit-by-subject [--prefix] <subject>}"
+
+sha=$(git log --first-parent --max-count=1000 --format='%H%x09%s' \
+  | awk -F'\t' -v m="$SUBJECT" -v mode="$mode" '
+      BEGIN { verbatim = (m ~ / \(#[0-9]+\)$/) }
+      { s = $2; if (!verbatim) sub(/ \(#[0-9]+\)$/, "", s) }
+      mode == "exact"  && s == m           { print $1; exit }
+      mode == "prefix" && index(s, m) == 1 { print $1; exit }')
+
+if [ -z "$sha" ]; then
+  case "$mode" in
+    exact)  echo "FAIL  no first-parent commit whose subject is '$SUBJECT'  [pushed? right branch? git pull?]" >&2 ;;
+    prefix) echo "FAIL  no first-parent commit whose subject starts with '$SUBJECT'  [pushed? right branch? git pull?]" >&2 ;;
+  esac
+  exit 1
+fi
+echo "$sha"

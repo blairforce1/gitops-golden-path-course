@@ -283,7 +283,8 @@ Read it; when the diff is what the body claims:
 gh pr merge --merge --delete-branch
 git switch main && git pull
 sha=$(git rev-parse HEAD)
-until flux get kustomization app-dev | grep -q "${sha:0:7}"; do sleep 2; done
+echo -n "waiting for app-dev to reconcile ${sha:0:7} (the source interval is 1m) "
+until flux get kustomization app-dev | grep -q "${sha:0:7}"; do printf .; sleep 2; done; echo
 echo "merge-to-running: $(( $(date +%s) - $(git log -1 --format=%ct) ))s"
 kubectl -n ggp get deploy app                        # 1/1 - dev overlay back to canonical, unaided
 ```

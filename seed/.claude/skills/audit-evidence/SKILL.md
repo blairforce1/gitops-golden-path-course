@@ -1,5 +1,6 @@
 ---
 name: audit-evidence
+argument-hint: "[the question, verbatim] [sha | subject prefix | #PR | <stamp> <cluster> | a date window]"
 description: >-
   Assemble an audit dossier for a change, a PR, a stamp or a time window from durable artifacts only (git, commit statuses, the PR record, the work item, what the cluster applied). Use when someone asks what ran where and when, who approved a change, what evidence gated it, whether a window held any change to production, or for the full evidence trail of one change. Also the closing step of a drill.
 ---
@@ -29,12 +30,14 @@ Run these from the config repo root, on `main`, up to date. Every command reads;
 ./scripts/evidence <sha-or-subject-prefix> [stamp] [kube-context]
 ```
 
-**The sequence, not the summary.** `.../commits/<sha>/status` returns only the latest state per context; the plural endpoint returns every posting in order, which is what shows a green posted about a revision the cluster had not applied yet.
+**The sequence, not the summary.** `.../commits/<sha>/status` returns only the latest state per context; the plural endpoint returns every posting in order, which is what shows a green whose description is not `reconciliation succeeded` (every non-error event posts as `success`). On Flux 2.8.x no failure posts; a context present on the parent commit and absent here is the red.
 
 ```sh
 gh api "repos/{owner}/{repo}/commits/<sha>/statuses" --paginate \
   --jq 'sort_by(.created_at) | .[] | "\(.created_at)  \(.state)  \(.context)  \(.description // "")"'
 ```
+
+**The registry.** Whether a tag exists is an artifact too, and it is what turns "health check failed" into a cause. The course's tool is `docker manifest inspect $APP_IMAGE:<tag>`: exit 0 present, non-zero absent.
 
 **The PR record.** The merge commit's subject is the PR title and its body is the PR body, so the trailers are already in `git log`. The PR itself holds the reviews and the check rollup.
 
@@ -50,10 +53,13 @@ gh pr view <number> --json reviews,statusCheckRollup,mergedBy,mergedAt,author,la
 gh issue view <n> --json number,title,state,createdAt,closedAt,milestone,labels
 ```
 
-**What a cluster runs now, and what it ran over a range.** The cluster reports only its current applied revision. History comes from the status sequence (one success per applied revision, timestamped) and, where it is scraped, from the metric store.
+**What a cluster runs now, and what it ran over a range.** `lastAppliedRevision` is now. The stamp's `status.history` is one entry per render digest with the revision, first and last reconcile times, count and last status: a failed render shows as `HealthCheckFailed` and never reaches `lastAppliedRevision`, and a revert that restores the same bytes shares the earlier entry. Beyond that, the status sequence (one success per applied revision, timestamped) and, where it is scraped, the metric store.
 
 ```sh
 kubectl --context <ctx> -n flux-system get kustomization <stamp> -o jsonpath='{.status.lastAppliedRevision}{"\n"}'
+kubectl --context <ctx> -n flux-system get kustomization <stamp> -o json \
+  | jq -r '.status.history[] | .firstReconciled + "  " + .lastReconciled + "  x" + (.totalReconciliations|tostring)
+           + "  " + .lastReconciledStatus + "  " + .metadata.revision[0:17]'
 ./scripts/release-notes <stamp> <ctx> <since-revision> --first-parent          # what shipped, as reviewed
 ```
 
