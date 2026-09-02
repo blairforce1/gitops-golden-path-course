@@ -6,7 +6,7 @@
 
 Run this only when stages 05–07 are individually green. It exercises the act as one system: fleet rebuild, promotion up the ladder (platform→dev→prod: folders plus PR discipline plus evidence gates; no controller enforces it), a break on one rung seen from the commit it rode in on, and evidence across clusters. Terminology reminder for the drills: a *stamp* is a Flux `Kustomization` CR. Same rule as Act I: **no stopwatch anywhere**. Timings come from artifacts (commit stamps, per-context status `created_at`, condition transitions).
 
-> **Where this fits:** the checkpoint runs at stage 07, on a three-cluster fleet with no monitoring stack. Act III's checkpoint adds the dashboard-detection drill and the SLO signature, which need stage 09; drill 3 here detects from statuses alone, which is exactly the point of running it before dashboards exist.
+> **Where this fits:** the checkpoint runs at stage 07, on a three-cluster fleet with no monitoring stack. Act III's checkpoint adds the dashboard-detection drill and the SLO signature, which need stage 09, and reads the four numbers off its own drills, which needs stage 10; drill 3 here detects from statuses alone, which is exactly the point of running it before dashboards exist.
 
 ## The drills
 
@@ -59,10 +59,18 @@ echo "fleet-from-nothing: $(( $(date -d "$t1" +%s) - $(date -d "$t0" +%s) ))s"
 
 One thing the forge will not show you. `main` did not change, so the rebuilt fleet posts nothing: the GitHub provider skips a status identical to the one already on the commit, and the greens on `HEAD` are the destroyed fleet's testimony. `checkpoint-07` counts them and passes on it. The forge's witness to a rebuild is elsewhere: three deploy keys, re-registered under the same titles with new ids (`gh api "repos/{owner}/{repo}/keys"`). The cluster's witness is the one you just read, `status.history`.
 
-**Record: fleet-from-nothing time.** Then tag the boundary you just proved rebuildable - this is the state `act-2-drill` will rebuild to, and the range marker stages 10 and 25 read:
+**Record: fleet-from-nothing time.** Then tag the boundary you just proved rebuildable - this is the state `act-2-drill` will rebuild to, and the range `git diff act-1..act-2 --stat` reads as the act's change:
 
 ```sh
 git tag act-2 && git push --tags
+```
+
+The tag makes the act one range. Read it once: it is the act's change as git holds it, and nothing in it arrived any other way:
+
+```sh
+git diff act-1..act-2 --stat
+# → the two spokes and what the platform grew for them, the pins, the secrets machinery,
+#   the act's scripts and skills: about 65 files
 ```
 
 ### 2. Promotion - lead time per rung
@@ -247,34 +255,46 @@ One command, because a dossier is a deliverable and not a pile of raw query outp
 ```
 THE CHANGE
 ----------
-  commit         9470bb4  break(app-prod): absent image
+  commit         e99aba0  break(app-prod): absent image (#97)
   author         <you> <you@example.com>
-  committed      2026-08-24T13:21:25+01:00
+  committed      2026-09-01T10:35:43+01:00
   files          apps/overlays/prod/kustomization.yaml
-  blast radius   app-prod on prod-01  (from the status context that went red)
+  blast radius   app-prod on prod-01  (from the status context that never posted: it did on the parent commit)
 
 WHO TOUCHED THIS PATH AFTERWARDS
 --------------------------------
-  b6097f2   2026-08-24T13:30:05+01:00  Revert "break(app-prod): absent image"   <you>
-  9470bb4   2026-08-24T13:21:25+01:00  break(app-prod): absent image            <you>
+  da56930   2026-09-01T10:48:20+01:00  Revert "break(app-prod): absent image (#97)" (#98)  <you>
+  e99aba0   2026-09-01T10:35:43+01:00  break(app-prod): absent image (#97)                <you>
 
 WHAT THE FLEET SAID, IN ORDER
 -----------------------------
-  ...
-  2026-08-24T12:25:18Z  failure   kustomization/app-prod/prod-01     health check failed
+  ...  (every other context, in the order the clusters fetched: success, reconciliation succeeded)
 
-  failure: 1
   success: 14
+  silent: 1   kustomization/app-prod/prod-01  (posted on the parent commit, never on this one)
+  (the /status endpoint shows only this last line - the latest per context. The
+   sequence above needs /statuses, and the sequence is what shows a green whose
+   description is not 'reconciliation succeeded'.)
 
 WHAT THAT CLUSTER ACTUALLY APPLIED
 ----------------------------------
-  now running    <sha>  <subject>
+  now running    da56930  Revert "break(app-prod): absent image (#97)" (#98)
+  verdict        this commit is an ancestor of what the cluster runs now
+                 (true after a revert too - the revert is also an ancestor. What the
+                  cluster served DURING the failure is the status sequence above.)
+  gave up        2026-09-01T09:39:02Z  (first HealthCheckFailed event; the stamp's own verdict)
 
 THE ANSWER, IN ENGLISH
 ----------------------
-  ... only prod-01 reported a failure, because only its render changed.
-  The failure was a health check, not an apply error - the stamp failed and
-  the workload did not.
+  <you> changed app-prod on 2026-09-01.
+  The fleet reconciled that commit everywhere; only prod-01 never posted
+  on it, because only its render changed and its stamp never converged (on Flux
+  2.8.x a failure does not post, so the silence is the red). Reconcile scope is
+  the repo, change scope is the paths the commit touched.
+  The failure was a health check, not an apply error - which is the whole point:
+  the stamp failed and the workload did not. The cluster kept serving the last
+  revision that passed, so the artifacts prove a negative (the bad version never
+  ran) without anyone having been watching.
 ```
 
 Note the second line of the dossier and what produced it. **Nothing was told which cluster to look at**: the script read the status context that went red, `kustomization/app-prod/prod-01`, and split the stamp and cluster straight out of it. On the 2.8.8 pin nothing goes red, so it reads the context that went *silent* instead, posted on the parent commit and never on this one, and the dossier says so (`from the status context that never posted`, `silent: 1`); the stamp's own `HealthCheckFailed` event supplies the verdict while it lasts. Same string, same split. That is the [identifier alignment rule](../appendices/repo-leak-posture.md) collecting: one string names the stamp, the namespace, the label, the metric, the commit scope *and* the status context, so a tool handed a red context already knows which file to open.

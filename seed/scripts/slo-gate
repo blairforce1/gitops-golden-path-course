@@ -6,7 +6,10 @@
 # Usage: slo-gate <cluster> [window]     e.g. slo-gate dev-01 30m
 # Clusters are the remote-writing spokes (dev-01, prod-01): the hub's own series carry
 # no cluster label, because externalLabels are applied on egress, not to local storage.
-# Tunables (env): SLO_TARGET (default: read from the SLO in git), SLO_P95_MAX (default 0.3s)
+# Tunables (env): SLO_TARGET (default: read from the SLO in git), SLO_P95_MAX (default 0.3s),
+#   SLO_MIN_SOAK (default 2m: how long the candidate must have been on the rung before
+#   the window's evidence counts as being ABOUT it - a production ladder sets the full
+#   window), SLO_STAMP (default app-<env> from the cluster name)
 set -uo pipefail
 
 CLUSTER="${1:?usage: slo-gate <cluster> [window e.g. 30m]}"
@@ -20,7 +23,7 @@ P95_MAX="${SLO_P95_MAX:-0.3}"
 # Before that, convergence is the ladder's only signature and this gate has nothing to
 # judge - SKIP, not FAIL, so a promotion made before stage 09 is not refused for a
 # judge that does not exist yet. With the rule present and the hub unreachable, FAIL.
-SLO_RULE="infrastructure/monitoring-hub/resources/app-slo.prometheusrule.yaml"
+SLO_RULE="infrastructure/monitoring-hub-crs/resources/app-slo.prometheusrule.yaml"
 [ -f "$SLO_RULE" ] || { echo "SKIP  no SLO in git yet ($SLO_RULE lands at stage 09) - convergence is the only signature"; exit 0; }
 
 # The hub judges the whole fleet. Reach it by port-forward, not by node IP: NodePorts
@@ -64,6 +67,44 @@ fi
 
 echo "== slo-gate: $CLUSTER over $WINDOW (SLO >=$TARGET from git, p95 <=${P95_MAX}s) =="
 
+# The candidate first: the window certifies whatever ran on the rung during it, so the gate
+# must know WHICH code that was before any number means anything. Two questions, in order.
+# Arrival: is the revision the rung applied the one git says main is? Between a merge and the
+# end of its rollout the rung is still running the predecessor, and a gate run then would
+# certify the old code with a long residency and a straight face. Ask the cluster what it
+# applied, ask git what you asked for. Residency: how long has THAT revision been on the
+# rung? A candidate younger than the evidence was judged by its predecessor's behaviour -
+# two merges in quick succession pass an unsoaked gate on code that is no longer running.
+# Arrival is a metric sample, same as detection: when the revision label first appeared on
+# the hub. The revision is the applied SOURCE revision, so any merge to main resets both
+# answers - over-strict for an unrelated commit, and honestly so: the bits on the rung changed.
+STAMP="${SLO_STAMP:-app-${CLUSTER%%-*}}"
+secs() { case "$1" in *h) echo $(( ${1%h} * 3600 ));; *m) echo $(( ${1%m} * 60 ));; *s) echo "${1%s}";; *) echo "$1";; esac; }
+MIN_SOAK="${SLO_MIN_SOAK:-2m}"; soak_s=$(secs "$MIN_SOAK"); win_s=$(secs "$WINDOW")
+look=$(( 2 * (win_s > soak_s ? win_s : soak_s) )); [ "$look" -lt 600 ] && look=600
+qlabel() { curl -s --max-time 10 "http://localhost:$PORT/api/v1/query" --data-urlencode "query=$1" \
+           | yq -p=json ".data.result[0].metric.$2 // \"\"" 2>/dev/null; }
+git fetch -q origin main 2>/dev/null
+want=$(git rev-parse -q --verify origin/main 2>/dev/null || git rev-parse HEAD 2>/dev/null)
+have=$(qlabel "topk(1, max by (revision) (timestamp(gotk_resource_info{cluster=\"$CLUSTER\",name=\"$STAMP\",customresource_kind=\"Kustomization\"})))" revision)
+have=${have##*sha1:}
+[ -n "$want" ] || want=$have    # no git here: the hub's word is the only one
+if [ -z "$have" ] || [ "$have" = "null" ]; then
+  bad "candidate resident on $CLUSTER" "no gotk_resource_info for stamp $STAMP on the hub - fleet dashboard dark? ./scripts/checkpoint-09"
+elif [ "$have" != "$want" ]; then
+  bad "candidate applied on $CLUSTER" "the rung is running ${have:0:7}, main is ${want:0:7} - nothing below would be about your change. Wait for the stamp (flux get kustomizations --context kind-ggp-$CLUSTER), then re-run"
+else
+  age=$(q "time() - min(min_over_time(timestamp(gotk_resource_info{cluster=\"$CLUSTER\",name=\"$STAMP\",customresource_kind=\"Kustomization\",revision=~\".*sha1:$want\"})[${look}s:30s]))")
+  age=${age%%.*}
+  if [ -z "$age" ] || [ "$age" = "null" ]; then
+    bad "candidate resident on $CLUSTER" "the hub has no sample of ${want:0:7} on $STAMP yet - scrape lag; re-run in a moment"
+  elif [ "$age" -lt "$soak_s" ]; then
+    bad "candidate soaked ${age}s of the $MIN_SOAK required" "the rung applied ${want:0:7} ${age}s ago, so the window mostly measured its predecessor. Wait it out, or SLO_MIN_SOAK=30s for a what-if"
+  else
+    ok "candidate ${want:0:7} resident ${age}s on $CLUSTER (>= $MIN_SOAK) - the window measured this code"
+  fi
+fi
+
 req=$(q "sum(increase(traefik_service_requests_total{exported_service=~\"ggp-app-.*\",cluster=\"$CLUSTER\"}[$WINDOW]))")
 if [ -z "$req" ] || [ "$req" = "null" ]; then
   bad "traffic over $WINDOW: NONE" "a rung nobody exercised has proven nothing - is the probe loop running?"
@@ -79,9 +120,10 @@ else
 
   p95=$(q "histogram_quantile(0.95, sum by (le) (rate(traefik_service_request_duration_seconds_bucket{exported_service=~\"ggp-app-.*\",cluster=\"$CLUSTER\"}[$WINDOW])))")
   if [ -n "$p95" ] && [ "$p95" != "null" ] && [ "$p95" != "NaN" ]; then
+    p95r=$(awk -v p="$p95" 'BEGIN{printf "%.3f", p}')   # judged raw, printed to the millisecond
     awk -v p="$p95" -v m="$P95_MAX" 'BEGIN{exit !(p<=m)}' \
-      && ok "p95 latency over $WINDOW: ${p95}s (budget ${P95_MAX}s) - within" \
-      || bad "p95 latency over $WINDOW: ${p95}s (budget ${P95_MAX}s) - TOO SLOW" "slow is a failure mode Ready cannot see either"
+      && ok "p95 latency over $WINDOW: ${p95r}s (budget ${P95_MAX}s) - within" \
+      || bad "p95 latency over $WINDOW: ${p95r}s (budget ${P95_MAX}s) - TOO SLOW" "slow is a failure mode Ready cannot see either"
   else
     bad "p95 latency over $WINDOW: not measurable" "no duration histogram for $CLUSTER in that window"
   fi

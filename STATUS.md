@@ -14,10 +14,10 @@ Maintainers' ledger, not course material: the date each stage and checkpoint was
 | 06 | 2026-08-31 |
 | 07 | 2026-08-31 (the operator's aside, tmux layout and k9s panes, not yet re-verified) |
 | Act II checkpoint | 2026-09-01 |
-| 08 | 2026-08-20 |
-| 09 | 2026-08-22 |
-| 10 | - |
-| Act III checkpoint | 2026-08-24 |
+| 08 | 2026-09-01 |
+| 09 | 2026-09-02 |
+| 10 | 2026-09-02 |
+| Act III checkpoint | 2026-09-02 |
 | 11 | - |
 | 12 | - |
 | 13 | - |

@@ -21,6 +21,13 @@ kubectl --context <lower-ctx> -n flux-system get kustomization <stamp> -o jsonpa
 
 Stop if the lower rung's pin equals the target's: there is nothing to promote, say so.
 
+- From stage 14 the lower rung's pin carries a `digest` beside `newTag`. Read the lower rung's running pod and stop if it disagrees with the overlay: the rung is not yet running what its overlay says, so no gate verdict below is about the artifact you would promote.
+
+```sh
+kubectl --context <lower-ctx> -n ggp get pod -l app.kubernetes.io/name=app \
+  -o jsonpath='{.items[0].status.containerStatuses[0].imageID}'    # ...@sha256:<digest> must equal the overlay's digest
+```
+
 ## 2. The two signatures
 
 **Convergence.** The commit that put the version on the lower rung wears a green context for that rung's stamp:
@@ -54,16 +61,18 @@ A freeze on the target's paths stops the skill unless the asker names the incide
 ```sh
 source ./env.sh
 tag=$(yq '.images[0].newTag' apps/overlays/<lower-env>/kustomization.yaml)
-(cd apps/overlays/<target-env> && kustomize edit set image $APP_IMAGE:$tag)
+digest=$(yq '.images[0].digest // ""' apps/overlays/<lower-env>/kustomization.yaml)   # empty before stage 14
+(cd apps/overlays/<target-env> && kustomize edit set image $APP_IMAGE:$tag${digest:+@$digest})
 git add apps/overlays/<target-env>
 ./scripts/pr-open promote/<issue>/<stamp> "promote(<stamp>): app $tag" <<'EOF'
 ## What is moving
-<stamp> on <target rung>: <old tag> -> <new tag>. One line, the pin.
+<stamp> on <target rung>: <old tag> -> <new tag>. The pin: one line before stage 14, tag and digest from it.
 
 ## Why now
 <what the lower rung has served, since when; who asked>
 
 ## Evidence
+- artifact: <the digest, and that the lower rung's running pod reports the same one>
 - convergence: <the green context line, with its timestamp>
 - performance: <the slo-gate output, verbatim>
 - calendar: <freeze-gate output>; reach: <path-gate output>
@@ -76,7 +85,7 @@ Refs: #<issue>
 EOF
 ```
 
-Then stop. Print the PR URL and the merge line the human runs after the diff: `gh pr merge --merge --delete-branch && git switch main && git pull`.
+Then stop. Print the PR URL and the merge line the human runs after the diff: `gh pr merge --merge --delete-branch && git switch main && git pull`, with `gh pr checks --watch --fail-fast && ` in front once the repo has `.github/workflows` (from stage 08 a ruleset refuses a merge before the check reports).
 
 ## Rules
 

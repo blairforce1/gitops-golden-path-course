@@ -255,7 +255,7 @@ gh api "repos/{owner}/{repo}/commits/$(git rev-parse HEAD)/status" \
 
 ### 4. Promotion is a PR that moves a pin
 
-Dev already runs a newer version than prod (compare the overlay pins). Promoting is copying the pin. Every change here has been a PR since stage 02; what is new is that this one **carries evidence**: dev's green context on the source commit is the case for the change, and the body is where it goes. The seven lines in full once more, because this is the PR the rest of the course keeps coming back to:
+Dev already runs a newer version than prod (compare the overlay pins). Promoting is copying the pin. The pin is a tag for now, and a tag is a label a registry lets anyone move; from [stage 14](../act-4/stage-14.md), when a robot starts writing pins, the pin names the artifact itself, by digest. Every change here has been a PR since stage 02; what is new is that this one **carries evidence**: dev's green context on the source commit is the case for the change, and the body is where it goes. The seven lines in full once more, because this is the PR the rest of the course keeps coming back to:
 
 ```sh
 source ./env.sh

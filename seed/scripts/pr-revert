@@ -8,7 +8,7 @@
 # convention rule 6): that string is the durable link to what it undoes. The body is
 # assembled from what git already knows plus the one sentence only you know: why now.
 # Merging is your line, after the diff:
-#   gh pr merge --merge --delete-branch && git switch main && git pull
+#   [gh pr checks --watch --fail-fast &&] gh pr merge --merge --delete-branch && git switch main && git pull
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 die() { printf 'pr-revert: %s\n' "$1" >&2; exit 1; }
@@ -55,4 +55,6 @@ gh pr create --title "$(git log -1 --format=%s)" --body "$body"
 echo
 gh pr diff
 echo
-echo "Read the diff. Then, and only then:  gh pr merge --merge --delete-branch && git switch main && git pull"
+merge="gh pr merge --merge --delete-branch && git switch main && git pull"
+[ -d .github/workflows ] && merge="gh pr checks --watch --fail-fast && $merge"   # a ruleset may require the check
+echo "Read the diff. Then, and only then:  $merge"

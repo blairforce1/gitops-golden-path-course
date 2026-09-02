@@ -18,12 +18,16 @@ for c in kind-ggp-local-01:app-dev:dev kind-ggp-dev-01:app-dev:dev kind-ggp-prod
     -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
   [ "$st" = "True" ] && ok "$ctx: $stamp Ready" || bad "$ctx: $stamp Ready" "got: ${st:-absent}"
 
+  # The pin is a tag until stage 14 and tag@digest from it: read the tag before any '@'
+  # and, when the overlay carries a digest, hold the cluster to that too.
   want=$(yq '.images[0].newTag' "apps/overlays/$overlay/kustomization.yaml" 2>/dev/null)
-  got=$(kubectl --context "$ctx" -n ggp get deploy app \
-    -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null); got=${got##*:}
-  [ -n "$want" ] && [ "$got" = "$want" ] \
-    && ok "$ctx: runs the $overlay overlay's pin ($got) - git<->runtime binding per cluster" \
-    || bad "$ctx: runs the $overlay overlay's pin" "git: ${want:-?} cluster: ${got:-?}"
+  wantd=$(yq '.images[0].digest // ""' "apps/overlays/$overlay/kustomization.yaml" 2>/dev/null)
+  img=$(kubectl --context "$ctx" -n ggp get deploy app \
+    -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)
+  got=${img%%@*}; got=${got##*:}; gotd=""; [ "$img" != "${img#*@}" ] && gotd=${img#*@}
+  [ -n "$want" ] && [ "$got" = "$want" ] && [ "$gotd" = "$wantd" ] \
+    && ok "$ctx: runs the $overlay overlay's pin ($got${wantd:+ by digest}) - git<->runtime binding per cluster" \
+    || bad "$ctx: runs the $overlay overlay's pin" "git: ${want:-?}${wantd:+@${wantd:0:19}} cluster: ${got:-?}${gotd:+@${gotd:0:19}}"
 
   kubectl --context "$ctx" -n flux-system get alert cluster-secrets-status >/dev/null 2>&1 \
     && ok "$ctx: Alert covers cluster-secrets (decryption failures are loud, fleet-wide)" \

@@ -11,18 +11,21 @@
 # metric is a continuous sample of the CR itself. Detection is a metric question;
 # attribution is a status question. This script answers the first.
 #
-# Usage: detect-time <stamp> <kube-context> [break-commit-subject] [window]
-#   e.g. detect-time app-prod kind-ggp-prod-01
+# Usage: detect-time <stamp> <kube-context> [break-commit-subject | sha] [window]
+#   e.g. detect-time app-prod kind-ggp-prod-01              (a drill: the break is labelled)
+#        detect-time app-prod kind-ggp-prod-01 e99aba0      (an incident: the break is a sha)
 #
-# The subject argument is optional because the commit convention made it derivable: a
-# break against this stamp has the subject prefix "break(<stamp>): ", so naming the stamp
-# already selects the commit. Pass a subject only to disambiguate several breaks against
-# the same stamp - it is matched as a prefix either way.
+# The third argument is optional because the commit convention made the DRILL case
+# derivable: a deliberate break against this stamp has the subject prefix "break(<stamp>): ",
+# so naming the stamp already selects the commit. A real break is never labelled - it is a
+# feat, a pin, a promote that happened to hurt - and it is found the other way round: the
+# stamp's status.history names the revision that failed, and that sha is the anchor. Pass
+# a sha and it is used as given; pass a subject and it is matched as a prefix.
 set -uo pipefail
 
-STAMP="${1:?usage: detect-time <stamp> <kube-context> [break-commit-subject] [window]}"
+STAMP="${1:?usage: detect-time <stamp> <kube-context> [break-commit-subject | sha] [window]}"
 KCTX="${2:?kube context the stamp runs on, e.g. kind-ggp-prod-01}"
-SUBJECT="${3:-break($STAMP): }"          # derived from the grammar; override to disambiguate
+SUBJECT="${3:-break($STAMP): }"          # derived from the grammar; a subject prefix or a sha overrides
 WINDOW="${4:-30m}"                       # how long AFTER the break to look
 # Era check first: the hub is stage 09's. Before it there is no metric store to ask, and
 # "since when" comes from the stamp itself (status.history, its events while they last,
@@ -38,7 +41,12 @@ secs() { case "$1" in *h) echo $(( ${1%h} * 3600 ));; *m) echo $(( ${1%m} * 60 )
 # field, anchored at the start by commit-by-subject: `git revert` writes Revert "<subject>",
 # so the subject it undoes sits inside the line rather than at the start of it, and a
 # substring search would find the revert (newer, and the opposite event).
-SHA=$("$(dirname "$0")/commit-by-subject" --prefix "$SUBJECT") || exit 1
+if [[ "$SUBJECT" =~ ^[0-9a-f]{7,40}$ ]] && git rev-parse -q --verify "$SUBJECT^{commit}" >/dev/null 2>&1; then
+  SHA=$(git rev-parse "$SUBJECT")          # an incident: the failed revision, named by status.history
+else
+  SHA=$("$(dirname "$0")/commit-by-subject" --prefix "$SUBJECT") || exit 1
+fi
+SUBJECT=$(git log -1 --format=%s "$SHA")   # print the subject found, not the prefix searched
 t0=$(git log -1 --format=%ct "$SHA")
 
 kubectl --context kind-ggp-local-01 -n monitoring port-forward svc/kube-prometheus-stack-prometheus \
@@ -56,6 +64,12 @@ spec=$(kubectl --context "$KCTX" -n flux-system get kustomization "$STAMP" \
 interval=${spec%% *}; timeout=${spec##* }
 [ -n "${timeout// }" ] || timeout="unset (defaults to the interval)"
 
+# When the stamp has the series now, the hub's earliest sample of it tells "no such series"
+# from "the store is younger than the break": a rebuilt hub (the act drills do this) holds
+# the stamp from its rebirth on and nothing before.
+born_json=$(curl -s --max-time 10 "http://localhost:$PORT/api/v1/query" \
+  --data-urlencode "query=min(min_over_time(timestamp(gotk_resource_info{name=\"$STAMP\"})[7d:5m]))")
+
 # Two minutes of "before" so the healthy state it broke FROM is on screen too.
 curl -s --max-time 20 "http://localhost:$PORT/api/v1/query_range" \
   --data-urlencode "query=gotk_resource_info{name=\"$STAMP\"}" \
@@ -63,7 +77,7 @@ curl -s --max-time 20 "http://localhost:$PORT/api/v1/query_range" \
   --data-urlencode "step=$STEP" \
 | SHA="${SHA:0:7}" SUBJECT="$SUBJECT" T0="$t0" STAMP="$STAMP" KCTX="$KCTX" \
   INTERVAL="$interval" TIMEOUT="$timeout" WINDOW="$WINDOW" STEP="$STEP" \
-  T_END="$t_end" SUSTAIN="$SUSTAIN" python3 -c '
+  T_END="$t_end" SUSTAIN="$SUSTAIN" BORN_JSON="$born_json" python3 -c '
 import json, os, sys, datetime
 from collections import defaultdict
 
@@ -86,8 +100,19 @@ print()
 print("break commit   %s  \"%s\"" % (os.environ["SHA"], os.environ["SUBJECT"]))
 if not at:
     print("               pushed at %s\n" % hhmmss(t0))
-    print("FAIL  no gotk_resource_info for %s on the hub at all." % stamp)
-    print("      Check the monitoring stamps are Ready fleet-wide: ./scripts/checkpoint-09")
+    born = None
+    try:
+        r = json.loads(os.environ["BORN_JSON"])["data"]["result"]
+        if r: born = int(float(r[0]["value"][1]))
+    except Exception:
+        pass
+    if born and born > t0:
+        print("FAIL  the hub knows %s only from %s, after the break: the store is younger than" % (stamp, hhmmss(born)))
+        print("      the question. A rebuilt hub starts empty, and so does a rebuilt stamp; the")
+        print("      numbers live in whatever record was made before the rebuild, and nowhere else.")
+    else:
+        print("FAIL  no gotk_resource_info for %s on the hub at all." % stamp)
+        print("      Check the monitoring stamps are Ready fleet-wide: ./scripts/checkpoint-09")
     sys.exit(1)
 
 before = [s for ts, s in sorted(at.items()) if ts <= t0]
@@ -111,10 +136,28 @@ t_end = int(os.environ["T_END"])
 for i, seg in enumerate(segments):
     seg.append(segments[i + 1][0] if i + 1 < len(segments) else t_end)
 
-sustain = int(os.environ["SUSTAIN"])
+sustain = int(os.environ["SUSTAIN"]); step = int(os.environ["STEP"])
+import re
+dur = lambda s: sum(int(n) * {"h": 3600, "m": 60, "s": 1}[u] for n, u in re.findall(r"(\d+)([hms])", s))
+timeout_s = dur(os.environ["TIMEOUT"])
+
+# A short not-Ready is the dependency cascade - unless it is the verdict at the end of a full
+# health check. Under a short retryInterval a failing stamp is False only for the gap between
+# attempts (30s) and Unknown for the whole timeout in between, so the red never sustains: the
+# False that follows a timeout-long Unknown is the stamp giving up, however brief.
+def verdict(i):
+    start, state, end = segments[i]
+    if "False" not in state or i == 0:
+        return False
+    ps, pstate, pe = segments[i - 1]
+    return "Unknown" in pstate and pe - ps >= max(timeout_s - step, sustain)
+def transient(i):
+    start, state, end = segments[i]
+    return start > t0 and state != "True" and end - start < sustain and not verdict(i)
+
 left_ready = confirmed = None
-for start, state, end in segments:
-    if start <= t0 or state == "True" or end - start < sustain:
+for i, (start, state, end) in enumerate(segments):
+    if start <= t0 or state == "True" or transient(i):
         continue
     if left_ready is None:
         left_ready = start
@@ -122,10 +165,10 @@ for start, state, end in segments:
         confirmed = start
         break
 
-for start, state, end in segments:
+for i, (start, state, end) in enumerate(segments):
     delta = "" if start <= t0 else "+%ds" % (start - t0)
     note = ""
-    if start > t0 and state != "True" and end - start < sustain:
+    if transient(i):
         note = "   transient (%ds) - the dependency cascade, not your break" % (end - start)
     elif start == left_ready:
         note = "   <- left Ready: the dashboard can see something is wrong"

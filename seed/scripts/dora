@@ -179,7 +179,22 @@ def tenant_of(stamp, ns):
     return "platform"
 
 # --- every deployment event: a workload generation INCREMENT --------------------------
-events = []          # (t, cluster, stamp, tenant, revision, is_prod)
+# The increment is the apply. The stamp reports the revision only once the health check
+# passes, which under wait: true is the rollout later, so at 60s resolution a sample can
+# land between the two and read the PREVIOUS revision against a new generation. Book each
+# increment against the first revision the stamp reports after it, bounded by the next
+# increment. No new revision before then means the stamp never accepted the change (a
+# rollout refused on health): booked against the revision it kept, and flagged, so it
+# counts as an application but not as a change that reached production.
+def revision_applied(cluster, stamp, t, until):
+    before = revision_at(cluster, stamp, t - 1)
+    for ts, rev in rev_tl.get((cluster, stamp), ()):
+        if ts < t or not rev: continue
+        if ts >= until: break
+        if rev != before: return rev, True
+    return revision_at(cluster, stamp, t), False
+
+events = []          # (t, cluster, stamp, tenant, revision, is_prod, applied)
 gen_tl = defaultdict(list)
 for s in workloads:
     m = s["metric"]
@@ -189,11 +204,11 @@ for s in workloads:
 for (c, ns, dep), pts in gen_tl.items():
     pts.sort(); st = stamp_for(c, ns)
     if st is None: continue
-    prev = None
-    for t, g in pts:
-        if prev is not None and g > prev:
-            events.append((t, c, st, tenant_of(st, ns), revision_at(c, st, t), bool(prod_re.match(c))))
-        prev = g
+    bumps = [t for (t, g), (_, p) in zip(pts[1:], pts[:-1]) if g > p]
+    for i, t in enumerate(bumps):
+        until = bumps[i + 1] if i + 1 < len(bumps) else end + 1
+        rev, ok = revision_applied(c, st, t, until)
+        events.append((t, c, st, tenant_of(st, ns), rev, bool(prod_re.match(c)), ok))
 events.sort()
 
 prod_events = [e for e in events if e[5]]
@@ -201,8 +216,8 @@ prod_units  = sorted({(e[1], e[3]) for e in prod_events})    # (cluster, tenant)
 
 # --- the unit is the CHANGE: group production deployments by revision -----------------
 changes = defaultdict(list)
-for t, c, st, ten, rev, _ in prod_events:
-    if rev: changes[rev].append((t, c, ten))
+for t, c, st, ten, rev, _, ok in prod_events:
+    if rev and ok: changes[rev].append((t, c, ten))
 
 n_units = len(prod_units)
 complete, partial = [], []
@@ -279,18 +294,30 @@ if step >= sustain:
     print("WARNING      step (%ds) is coarser than the sustain filter (%ds); counts are a FLOOR" % (step, sustain))
 print()
 if not n_units:
-    print("no production units matched %s - nothing to measure." % os.environ["PROD"]); sys.exit(0)
+    # Two different silences: the regex matched no cluster, or it matched and nothing moved
+    # (the minutes after a rebuild, every workload at generation 1). Say which.
+    matched = sorted({c for (c, _) in rev_tl if prod_re.match(c)})
+    if matched:
+        print("no production change in the window: %s matched %s, and no workload generation"
+              % (", ".join(matched), os.environ["PROD"]))
+        print("moved since %s - nothing to measure yet."
+              % datetime.datetime.fromtimestamp(first_sample).strftime("%Y-%m-%d %H:%M"))
+    else:
+        print("no production units matched %s - nothing to measure." % os.environ["PROD"])
+    sys.exit(0)
 
 print("DORA (production)")
-print("  deployment frequency   %-8s %.2f/day   (%d distinct change%s)"
-      % ("", n_changes / days, n_changes, "" if n_changes == 1 else "s"))
-print("  lead time for changes  median %-6s p95 %-6s  commit -> production, first arrival"
+# One shared grid: values start in one column, annotations in another, and the
+# median/p95 prefixes of rows 2 and 4 line up under the single values of 1 and 3.
+print("  deployment frequency          %-20s(%d distinct change%s)"
+      % ("%.2f/day" % (n_changes / days), n_changes, "" if n_changes == 1 else "s"))
+print("  lead time for changes  median %-7s p95 %-7s commit -> production, first arrival"
       % (fmt(pct(leads, 0.5)), fmt(pct(leads, 0.95))))
-print("  change failure rate    %-8s %s   (%d incident%s / %d changes)"
-      % ("", ("%.0f%%" % (100.0 * len(incidents) / n_changes)) if n_changes else "-",
+print("  change failure rate           %-20s(%d incident%s / %d changes)"
+      % (("%.0f%%" % (100.0 * len(incidents) / n_changes)) if n_changes else "-",
          len(incidents), "" if len(incidents) == 1 else "s", n_changes))
 mt = [i["end"] - i["start"] for i in incidents]
-print("  time to restore        median %-6s p95 %-6s  per incident, last unit recovered"
+print("  time to restore        median %-7s p95 %-7s per incident, last unit recovered"
       % (fmt(pct(mt, 0.5)), fmt(pct(mt, 0.95))))
 print()
 span_txt = ("%.1f days" % days) if days >= 1 else ("%.1f hours" % (days * 24))
@@ -317,9 +344,9 @@ if by:
     print("is the fleet number above, and this says which %s is moving it." % by)
     print()
     agg = defaultdict(lambda: [0, []])
-    for t, c, st, ten, rev, _ in prod_events:
+    for t, c, st, ten, rev, _, ok in prod_events:
         k = {"tenant": ten, "cluster": c, "stamp": "%s/%s" % (st, c)}[by]
-        ct = commit_time.get(rev) if rev else None
+        ct = commit_time.get(rev) if rev and ok else None
         agg[k][0] += 1
         agg[k][1].append(t - ct if ct and t >= ct else None)
     w = max(12, max(len(x) for x in agg) + 2)
@@ -337,9 +364,9 @@ if rungs:
     print("production. This is feedback-loop speed, which is a different question.")
     print()
     other = defaultdict(lambda: [0, []])
-    for t, c, st, ten, rev, isp in events:
+    for t, c, st, ten, rev, isp, ok in events:
         if isp: continue
-        ct = commit_time.get(rev) if rev else None
+        ct = commit_time.get(rev) if rev and ok else None
         other[c][0] += 1
         other[c][1].append(t - ct if ct and t >= ct else None)
     if not other:
@@ -459,6 +486,10 @@ print()
 print("reconciles   %d stamp revision changes across all rungs produced %d production" % (recon, len(prod_events)))
 print("             application(s), which are %d distinct change(s). Reconcile is not" % n_changes)
 print("             change, and an application is not a deployment.")
+refused = sum(1 for e in prod_events if not e[6])
+if refused:
+    print("refused      %d of those application(s) the stamp never reported as applied - a rollout" % refused)
+    print("             refused on health. An application, not a change; its commit is not a lead time.")
 missing = sum(1 for c in complete + partial if c["lead"] is None)
 if missing:
     print()

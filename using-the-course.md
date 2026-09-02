@@ -54,7 +54,7 @@ Acts close with an **act checkpoint** that exercises everything in the act end t
 
 **The rule.** The config repo is tagged at the end of every stage (`stage-07`) and every act (`act-2`), by the reader, as the last step of the stage's stop-and-measure. The same line closes the stage's issue (`gh issue close <n>`): the tag is the verification, the issue is the work item.
 
-**Why.** "Your tree should now match `stage-07`" and `git diff stage-06..stage-07 --stat` are only real if the tags exist; `act-N-drill` rebuilds *to* a tag; the per-cluster change record (stage 26) and the DORA computation (stage 10) use them as range markers. A course that says "at this point your repo looks like this" without a tag is describing, not asserting. The tag is a save point, and `act-N-drill` is the proof you can load it.
+**Why.** "Your tree should now match `stage-07`" and `git diff stage-06..stage-07 --stat` are only real if the tags exist, and `act-N-drill` rebuilds *to* a tag. A course that says "at this point your repo looks like this" without a tag is describing, not asserting. The tag is a save point, and `act-N-drill` is the proof you can load it.
 
 **Where.** Every stage's stop-and-measure from stage 02 on; every act checkpoint's pass criteria.
 

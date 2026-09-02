@@ -66,6 +66,9 @@ lead_secs() { # lead_secs <sha> [success|failure]: commit stamp -> the app stamp
   secs "$t0" "$t1"
 }
 merge_pr() { # the drill is the reviewer here: the diff is the one it just wrote
+  if [ -d .github/workflows ]; then   # from stage 08 a ruleset requires the check: wait for it to register and report
+    for _ in 1 2 3 4 5 6; do gh pr checks --watch --fail-fast >/dev/null 2>&1 && break; sleep 10; done
+  fi
   gh pr merge --merge --delete-branch >/dev/null
   git switch -q main && git pull -q --ff-only
 }

@@ -11,7 +11,7 @@ The answer to an audit question is a document whose every line points at an arti
 
 ## 1. Shape the answer from the question
 
-Keep the question verbatim; it is the dossier's title. Then pick the shape:
+Keep the question verbatim; it is the dossier's title, and it ends at its question mark. What follows (a sha, a subject prefix, a PR number, a stamp and cluster, a window) is the identifier and stays out of the title. Then pick the shape:
 
 | The question is about | Start from | Shape |
 |---|---|---|
@@ -106,7 +106,7 @@ Findings are sentences an auditor can check against the timeline. Gaps are every
 
 ## 4. Land it
 
-Print the dossier. If it is to be kept, write it to `docs/audits/<YYYY-MM-DD>-<slug>.md`, stage it, and open a PR with `scripts/pr-open`, citing the audit's work item in the `Refs:` trailer: an audit answer is itself a change record, and it gets the same review as any other.
+Print the dossier. If it is to be kept, write it to `docs/audits/<YYYY-MM-DD>-<slug>.md`, stage it, and open a PR with `scripts/pr-open`, citing the audit's work item in the `Refs:` trailer: an audit answer is itself a change record, and it gets the same review as any other. A dossier that already answers the question is not overwritten and not duplicated: the record is append-only, so add a dated addendum to it (what was re-read and still holds, what has expired since, corrections to the original by section), and open that as the PR.
 
 ## Rules
 

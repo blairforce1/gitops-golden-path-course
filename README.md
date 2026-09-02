@@ -1,6 +1,6 @@
 # gitops-golden-path - the course
 
-> **Work in progress.** Acts I and II are live and verified end to end. The remaining acts land here as each one's verification completes. [STATUS.md](STATUS.md) is the verification ledger.
+> **Work in progress.** Acts I to III are live and verified end to end. The remaining acts land here as each one's verification completes. [STATUS.md](STATUS.md) is the verification ledger.
 
 A GitOps platform built stage by stage, in eight acts, on a laptop: Flux, Kustomize, SOPS, a promotion ladder across three clusters, fleet observability with an SLO that gates promotion; then the ladder operated by robots, secrets done properly, a second tenant, and finally the cloud absorbing every layer you built by hand. Every stage ends at a **stop-and-measure** point whose checks are scripts, and every act ends with a rebuild-from-nothing.
 

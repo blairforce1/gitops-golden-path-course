@@ -34,6 +34,7 @@ Read them together: a green status is any non-error event, so read its descripti
 ## 3. Three things that look like failures and are not
 
 - **The dependency cascade.** On every new revision, each stamp with `dependsOn` reports Ready=False with `DependencyNotReady` while its dependency reconciles, so the dashboard reds fleet-wide for one scrape. The discriminator is duration, not colour.
+- **Unknown is part of a failure, not a pause.** A stamp under `wait: true` with a short `retryInterval` spends each attempt at Ready=Unknown (`Reconciliation in progress`, the health timeout) and only the gap between attempts at Ready=False. A stamp out of Ready for longer than its health timeout is failing whichever value it shows now; the reason is on the last `HealthCheckFailed` event.
 - **A green that is not a success.** The provider maps event severity to state, so an info event posts as `success` whatever it says. Read the description; only `reconciliation succeeded` is the verdict, and `lastAppliedRevision` is the fact.
 - **Suspended is not stuck.** `spec.suspend: true` on the stamp means nothing reconciles until a resume; find who set it in the API audit log, if enabled, and treat the resume as a change.
 

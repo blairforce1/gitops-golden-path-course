@@ -36,7 +36,7 @@ Everything stage 00 seeds and everything the stages create in the config repo. T
 ## What is deliberately course-only
 
 - `scripts/checkpoint-NN` and `scripts/act-N-drill`: they judge the course's fleet at the course's stages. Keep them as a regression harness if the shape stays close; a real fleet writes its own.
-- `scripts/cluster-up`, `scripts/cluster-down`, `scripts/refresh-hub-address`: kind and podman lifecycle, and the one wart of a docker-network hub address that dies with the cluster.
+- `scripts/cluster-up`, `scripts/cluster-down`, `scripts/refresh-hub-address`: kind and podman lifecycle, plus the fallback for environments where the hub's container name doesn't resolve and a pinned IP has to chase the node container.
 - `tools/` in the course repo (`docs-gate`, `seed-backlog`, `start-quest`): they hold the course's own text honest and seed its backlog. A production team cites a ticket system's keys.
 - Azurite and the demo app: props. Their stand-in is your storage and your workloads.
 - The seeded backlog: the numbers are literal because every reader's repo is fresh. Your work items come from wherever your work items live, and `issue-gate` is the seam.

@@ -44,7 +44,13 @@ q() { curl -s "http://localhost:19090/api/v1/query" --data-urlencode "query=$1";
 
 n=$(q 'count(count by (cluster) (up))' | yq -p=json '.data.result[0].value[1] // 0' 2>/dev/null); n=${n%%.*}; n=${n:-0}; [ "$n" = "null" ] && n=0
 [ "${n:-0}" -ge 3 ] && ok "hub sees $n clusters (spokes remote-writing with their cluster label)" \
-  || bad "hub sees all clusters" "got ${n:-0} of 3 - stale HUB_IP in cluster-facts?"
+  || bad "hub sees all clusters" "got ${n:-0} of 3 - hub address wrong in cluster-facts? (name not resolving, or a pinned IP gone stale)"
+
+for c in dev-01 prod-01; do
+  n=$(q "count(gotk_resource_info{cluster=\"$c\", customresource_kind=\"GitRepository\"})" | yq -p=json '.data.result[0].value[1] // 0' 2>/dev/null); n=${n%%.*}; n=${n:-0}; [ "$n" = "null" ] && n=0
+  [ "${n:-0}" -ge 1 ] && ok "$c: every exported kind reaches the hub (its GitRepository is there)" \
+    || bad "$c: every exported kind reaches the hub" "GitRepository series missing - remote-write batches refused? two writers to one series (defaultRules on the spoke)"
+done
 
 n=$(q 'count(gotk_resource_info)' | yq -p=json '.data.result[0].value[1] // 0' 2>/dev/null); n=${n%%.*}; n=${n:-0}; [ "$n" = "null" ] && n=0
 [ "${n:-0}" -ge 1 ] && ok "per-CR state is a metric (gotk_resource_info: $n series) - 'which stamp, since when' is a query" \
@@ -59,6 +65,12 @@ loaded=$(curl -s "http://localhost:19090/api/v1/rules" | yq -p=json '[.data.grou
   || bad "hub evaluates the SLO rules" "PrometheusRule present but not selected? check the release label"
 
 kill "$pf" 2>/dev/null; wait "$pf" 2>/dev/null
+
+for ctx in kind-ggp-dev-01 kind-ggp-prod-01; do
+  n=$(kubectl --context "$ctx" -n monitoring get prometheusrules --no-headers 2>/dev/null | wc -l)
+  [ "${n:-0}" -eq 0 ] && ok "$ctx: evaluates no rules (the hub is the only writer of rule series)" \
+    || bad "$ctx: evaluates no rules" "$n PrometheusRule(s) - defaultRules.create: false missing on the agent variant"
+done
 
 n=$(kubectl --context kind-ggp-local-01 -n monitoring get configmap -l grafana_dashboard=1 -o name 2>/dev/null | wc -l)
 [ "${n:-0}" -ge 1 ] && ok "dashboard configmaps present for the sidecar ($n)" \

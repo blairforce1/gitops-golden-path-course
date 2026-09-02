@@ -45,12 +45,24 @@ done < <(comm -23 \
   <(git ls-files scripts decisions .claude/skills | sort) \
   <(git -C "$COURSE" ls-files 'seed/scripts' 'seed/decisions' 'seed/.claude/skills' | sed 's|^seed/||' | sort))
 
+resume=0
 if [ ${#drifted[@]} -eq 0 ]; then
-  echo "in sync: every seeded file matches the course"
-  exit 0
+  # An earlier run may have copied and staged the files and stopped before its PR opened
+  # (pr-open refused, or Ctrl-C). Then nothing drifts, but the sync is not done: resume it.
+  mapfile -t staged < <(git diff --cached --name-only -- scripts decisions .claude/skills)
+  if [ ${#staged[@]} -eq 0 ]; then
+    echo "in sync: every seeded file matches the course"
+    exit 0
+  fi
+  drifted=("${staged[@]}")
+  resume=1
 fi
 
-echo "drifted (course -> config repo):"
+if [ "$resume" = 1 ]; then
+  echo "copied and staged by an earlier run, PR not opened - resuming:"
+else
+  echo "drifted (course -> config repo):"
+fi
 for dest in "${drifted[@]}"; do
   printf '  %s\n' "$dest"
   src="$COURSE/$(map_src "$dest")"
@@ -78,4 +90,6 @@ printf '%s\n' "$body" | ./scripts/pr-open "chore/$issue/course-sync" "chore(scri
 echo
 echo "sync-seed is done; the merge is not. Next:"
 echo "  1. Check the PR diff above - it must show only the files listed."
-echo "  2. Merge it:  gh pr merge --merge --delete-branch && git switch main && git pull"
+merge="gh pr merge --merge --delete-branch && git switch main && git pull"
+[ -d .github/workflows ] && merge="gh pr checks --watch --fail-fast && $merge"   # a ruleset may require the check
+echo "  2. Merge it:  $merge"

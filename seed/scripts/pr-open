@@ -5,7 +5,7 @@
 #
 # The first four steps of rule 2.4 - branch, commit, push, open - and never the fifth.
 # Merging is your line, after you have read the diff:
-#   gh pr merge --merge --delete-branch && git switch main && git pull
+#   [gh pr checks --watch --fail-fast &&] gh pr merge --merge --delete-branch && git switch main && git pull
 # The subject and body are linted by commit-gate before anything is created, because the
 # subject becomes the merge commit on main (merge_commit_title=PR_TITLE) and the body its
 # record (merge_commit_message=PR_BODY). An empty body is refused: a PR that says nothing
@@ -43,4 +43,6 @@ gh pr create --title "$subject" --body "$body"
 echo
 gh pr diff
 echo
-echo "Read the diff. Then, and only then:  gh pr merge --merge --delete-branch && git switch main && git pull"
+merge="gh pr merge --merge --delete-branch && git switch main && git pull"
+[ -d .github/workflows ] && merge="gh pr checks --watch --fail-fast && $merge"   # a ruleset may require the check
+echo "Read the diff. Then, and only then:  $merge"

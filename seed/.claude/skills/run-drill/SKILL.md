@@ -51,4 +51,5 @@ On the work item: the scenario as stated, the numbers with their sources, one `a
 - Attack what exists; build nothing during a drill.
 - No stopwatch.
 - The drill's PRs cite the drill's work item.
+- The pack closes the drill. What the checkpoint does next is the reader's to know, not the skill's to prescribe: when the rebuild runs last, the other drills are already in the record.
 - Separate findings about the platform from findings about the drill's own script; both are PRs in this repo. A finding about the course (its text, a seeded script's logic) is reported on the work item with the evidence, not applied: the course repo is not this skill's to change, and a seeded script is changed course-first by its author and then synced.
