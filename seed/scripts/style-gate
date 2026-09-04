@@ -35,7 +35,7 @@ if out=$(docker run --rm -v "$PWD:/data:ro,z" -w /data "$KUSTOFMT_IMG" -l "${fil
   printf '%s\n' "$out" | grep -i 'sops-encrypted' | sed 's/^/      /'
 else
   printf '%s\n' "$out" | grep -v -i 'sops-encrypted' | sed 's/^/      /'
-  bad "format matches the house style" "listed above - fix in place: scripts/style-gate --fix"
+  bad "format matches the house style" "listed above - fix in place: scripts/style-fix"
 fi
 
 if docker run --rm -v "$PWD:/data:ro,z" -w /data "$YAMLLINT_IMG" yamllint -c .yamllint.yaml "${files[@]}"; then

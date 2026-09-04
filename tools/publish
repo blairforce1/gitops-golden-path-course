@@ -72,7 +72,8 @@ done
 awk 'in_t && $0 !~ /^\|/ && $0 !~ /^$/ {exit} {print; if ($0 ~ /^\|/) in_t=1}' \
   "$root/STATUS.md" | sed 's/—/-/g' > "$dest/STATUS.md"
 
-# README: the work-in-progress note, published tree only. The phrase
+# README: the work-in-progress note above the title, published tree only
+# (throw-away: it goes when the last act lands). The phrase
 # derives from PUBLISHED_ACTS so promotion is one list edit.
 set -- $PUBLISHED_ACTS
 last="$(roman "${!#}")"
@@ -81,8 +82,8 @@ case $# in
   2) phrase="Acts I and $last are" ;;
   *) phrase="Acts I to $last are" ;;
 esac
-note="> **Work in progress.** $phrase live and verified end to end. The remaining acts land here as each one's verification completes. [STATUS.md](STATUS.md) is the verification ledger."
-awk -v note="$note" 'NR==2 { print ""; print note; print ""; next } {print}' \
+note="> [!NOTE]\n> **Work in progress.** $phrase live and verified end to end. The remaining acts land here as each one's verification completes. [STATUS.md](STATUS.md) is the verification ledger."
+awk -v note="$note" 'NR==1 { printf "%s\n\n", note } {print}' \
   "$root/README.md" > "$dest/README.md"
 
 echo "publish: built $dest (acts published in full: $PUBLISHED_ACTS)"
