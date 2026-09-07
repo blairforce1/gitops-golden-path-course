@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# The whole-tree gates, every push, every verdict spoken before the hook fails.
+set -uo pipefail
+fail=0
+tools/docs-gate > /tmp/docs-gate.$$ 2>&1 || { cat /tmp/docs-gate.$$; fail=1; }; rm -f /tmp/docs-gate.$$
+# seeded pages follow the config repo's conventions, not the course voice (docs-gate says the same)
+# shellcheck disable=SC2046
+vale --no-wrap $(git ls-files "*.md" | grep -v "^seed/") || fail=1
+seed/scripts/commit-gate --docs > /tmp/commit-gate.$$ 2>&1 || { cat /tmp/commit-gate.$$; fail=1; }; rm -f /tmp/commit-gate.$$
+exit "$fail"

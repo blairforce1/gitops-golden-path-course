@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# Point a cluster at its folder: install Flux from the pinned CLI, mint the cluster's
-# deploy key, apply the committed sync manifests. What `flux bootstrap` does, minus the
-# part where it pushes to main - nothing does (rule 1.3).
+# Point a cluster at its folder: install Flux from the pinned CLI where it is absent,
+# mint the cluster's deploy key, apply the committed sync manifests. What
+# `flux bootstrap` does, minus the part where it pushes to main - nothing does (rule 1.3).
 #
 #   cluster-sync <cluster-path> [--context <ctx>] [--write]
 #
 # <cluster-path> is the folder under clusters/ whose flux-system/ was landed by PR at
 # stage 03 (e.g. clusters/platform/local-01). --write mints a read-write deploy key
-# (stage 14's robot). On a rebuilt cluster the old key of the same title is replaced;
-# the manifests in git - extra components included - take over at the first sync, so
-# there are no bootstrap flags to remember across rebuilds.
+# (stage 14's robot). The old key of the same title is always replaced; the manifests
+# in git - extra components included - take over at the first sync, so there are no
+# bootstrap flags to remember across rebuilds. On a cluster already syncing itself the
+# install is skipped (git's components file is the authority and the CLI refuses to
+# install over a self-managed Flux) and the run is a key rotation.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 path="${1:?usage: cluster-sync <cluster-path> [--context <ctx>] [--write]}"; shift
@@ -29,8 +31,17 @@ repo="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
 url="$(yq 'select(.kind == "GitRepository") | .spec.url' "$sync")"
 title="flux $cluster"
 
-echo "== flux install ($(flux version --client | tr -d '\n'))"
-flux install $ctx
+# A cluster that syncs itself holds the flux-system Kustomization, and its CRDs carry
+# that Kustomization's labels, which the CLI reads as "bootstrapped" and refuses to
+# install over. Nothing is lost: the next sync applies git's components file.
+live=false
+if kubectl $ctx -n flux-system get kustomization flux-system >/dev/null 2>&1; then
+  live=true
+  echo "== flux already on the cluster and synced from git - install skipped ($(flux version --client | tr -d '\n'))"
+else
+  echo "== flux install ($(flux version --client | tr -d '\n'))"
+  flux install $ctx
+fi
 
 echo "== deploy key '$title' ($([ "$readonly_key" = true ] && echo read-only || echo READ-WRITE))"
 kubectl $ctx -n flux-system delete secret flux-system --ignore-not-found >/dev/null
@@ -43,7 +54,13 @@ done
 gh api -X POST "repos/$repo/keys" -f title="$title" -f key="$pub" -F read_only="$readonly_key" \
   --jq '"   registered: \(.title)  read_only: \(.read_only)"'
 
-echo "== sync $path"
-kubectl $ctx apply -f "$sync"
+# On a live cluster the sync pair is already applied from git and owned by Flux, so a
+# kubectl apply would only add a second field manager and a warning; reconcile instead.
+if [ "$live" = true ]; then
+  echo "== sync $path (already applied from git - reconciling with the new key)"
+else
+  echo "== sync $path"
+  kubectl $ctx apply -f "$sync"
+fi
 flux reconcile kustomization flux-system --with-source $ctx
 flux get kustomizations $ctx

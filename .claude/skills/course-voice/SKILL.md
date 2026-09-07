@@ -31,5 +31,5 @@ The course reads as a finished, published artifact, written in plain technical E
 
 ## Enforcement
 
-- `vale .` from the repo root lints the bans (config in `.vale.ini`, rules in `.vale/styles/Course/`).
+- `vale .` from the repo root lints the bans (config in `.vale.ini`, rules in `.vale/styles/Course/`). The README's preface (the author's own words, in a blockquote) is fenced with `<!-- vale off -->` / `<!-- vale on -->` and is the one passage the rules do not judge.
 - `tools/docs-gate` validates links, anchors, counts, and work-item citations; `scripts/commit-gate --docs $(git ls-files '*.md')` holds every commit string in the text to the convention it teaches. Run both before pushing any docs change.

@@ -23,9 +23,9 @@ Status: `accepted` (binding), `proposed` (under discussion), `superseded` (the h
 | [0007](0007-one-resource-per-file-typed-folders.md) | One resource per file, `<name>.<kind>.yaml`, in typed folders | rules 3.1, 3.2, 3.3 |
 | [0008](0008-yaml-style-is-the-tools-style.md) | YAML style is the tool's style, and the tool writes the file | rules 3.4, 3.5 |
 | [0009](0009-identifier-alignment-one-string-seven-homes.md) | Identifier alignment: one string, seven homes | rule 3.6 |
-| [0010](0010-one-master-per-tool-kubectl-never-renders.md) | One master per tool, and kubectl never renders | rule 4.1 |
+| [0010](0010-one-authority-per-tool-kubectl-never-renders.md) | One authority per tool, and kubectl never renders | rule 4.1 |
 | [0011](0011-filters-from-images-operators-installed.md) | Filters run from pinned images; operators install natively | rule 4.2 |
-| [0012](0012-follow-the-master-at-kubernetes-pace.md) | Follow the master, at the pace Kubernetes sets | rule 4.3 |
+| [0012](0012-follow-the-authority-at-kubernetes-pace.md) | Follow the authority, at the pace Kubernetes sets | rule 4.3 |
 | [0013](0013-clusters-class-cluster-layout-local-is-a-rung.md) | `clusters/<class>/<cluster>/`, and the local cluster is a first-class rung | rule 1.1; the vocabulary |
 | [0014](0014-class-is-binary-policy-attaches-to-class.md) | Class is binary, and policy attaches to class, never to name | the vocabulary |
 | [0015](0015-bindings-live-in-the-cluster-folder.md) | Bindings live in the cluster folder; folders encode identity, never schedule | the vocabulary |
@@ -53,3 +53,4 @@ Status: `accepted` (binding), `proposed` (under discussion), `superseded` (the h
 | [0037](0037-variants-flags-and-migration-overlays-three-lifecycles.md) | Variants, feature flags and migration overlays: three lifecycles, three homes | stage 08 |
 | [0038](0038-dr-is-rebuild-not-failover-region-b.md) | DR is rebuild, not failover; the drill is region B | rule 5.2; Act VIII checkpoint |
 | [0039](0039-tags-immutable-once-created.md) | Tags are immutable once created: a tag ruleset from day zero | rule 1.3; stage 00 |
+| [0040](0040-the-soak-is-declared-in-git-and-judged-from-git-dates.md) | The soak is declared in git and judged from git's dates | rule 5.7; stage 16 |

@@ -21,7 +21,7 @@ The platform uses Flux throughout: source-controller, kustomize-controller, helm
 
 ## Consequences
 
-- Easier: one CR vocabulary for sources, stamps, Helm releases, alerts and receivers; the AKS migration is a version pin, not a re-platform; local Flux pins to the AKS-bundled release ([0012](0012-follow-the-master-at-kubernetes-pace.md)).
+- Easier: one CR vocabulary for sources, stamps, Helm releases, alerts and receivers; the AKS migration is a version pin, not a re-platform; local Flux pins to the AKS-bundled release ([0012](0012-follow-the-authority-at-kubernetes-pace.md)).
 - Harder: no UI in the box. Fleet visibility has to be built (kube-state-metrics custom-resource state, Grafana), which the platform does deliberately so that the dashboard reads the same evidence the gates read.
 - Harder: Flux's `Kustomization` CR shares a name with kustomize's `kustomization.yaml`; the vocabulary term *stamp* exists to keep sentences unambiguous.
 - Follow-up: Flux receives CDEvents but does not emit them; the outbound half is a separate translator, briefed outside this repository.

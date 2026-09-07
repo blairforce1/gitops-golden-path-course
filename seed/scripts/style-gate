@@ -2,26 +2,49 @@
 # Style gate: the YAML style convention as an executable verdict, in two halves -
 #   kustofmt  - the FORMAT authority (kyaml's emitted style: indentless sequences,
 #               block over flow, canonical spacing). Skips sops files on its own.
+#               Installed natively, pinned in clusters/versions.yaml to the kyaml the
+#               kustomize pin ships: it is a writer under -w and runs in the pre-commit
+#               hook on every commit, so the operator side of rule 4.2 wins.
 #   yamllint  - everything formatting can't judge (truthy keys, trailing space,
-#               duplicate keys), configured by the committed .yamllint.yaml.
-# Both are pinned containers per the tool-provisioning rule, so CI, the git hooks
-# (stage 11) and your terminal reach the identical verdict.
+#               duplicate keys), configured by the committed .yamllint.yaml and run
+#               --strict: a warning is a verdict too, or the rule is decoration.
+# yamllint is a pinned container. Both pins are the same in CI, the git hooks
+# (stage 11) and your terminal, so every venue reaches the identical verdict.
 # Usage: style-gate [files...]   (no args = every tracked YAML outside tool-owned trees)
 set -uo pipefail
 
-KUSTOFMT_IMG="ghcr.io/blairforce1/kustofmt:0.1.5"
 YAMLLINT_IMG="docker.io/pipelinecomponents/yamllint:0.35.0"
+
+# The formatter's pin has an authority: the kyaml the pinned kustomize ships (rule 4.1).
+# It lives in clusters/versions.yaml beside the kustomize pin it follows;
+# check-kustofmt-kustomize-parity holds the two to one emitter and hands out the
+# install. This gate only refuses to judge with any other version.
+KUSTOFMT_V=$(yq -r '.kustofmt // ""' clusters/versions.yaml 2>/dev/null)
+[ -n "$KUSTOFMT_V" ] || { echo "FAIL  kustofmt pinned in clusters/versions.yaml  [stage 11 step 1 pins it]"; exit 1; }
+have=$(kustofmt -version 2>/dev/null | awk 'NR == 1 { print $2 }')
+[ "$have" = "$KUSTOFMT_V" ] \
+  || { echo "FAIL  installed kustofmt is the pin  [have ${have:-none}, want $KUSTOFMT_V - scripts/check-kustofmt-kustomize-parity names the install]"; exit 1; }
 
 [ -f .yamllint.yaml ] || { echo "FAIL  .yamllint.yaml exists  [stage 11 step 1 writes it]"; exit 1; }
 
-# Tool-owned trees are excluded by the CALLER, not by config: kustofmt has no ignore
-# file by design (gofmt doesn't either). flux-system/ is `flux install --export` output
-# and rewritten on every re-bootstrap - reformatting it would be a fight, not a fix.
+# Tool-owned trees are excluded here, whatever list the gate is handed: kustofmt has no
+# ignore file by design (gofmt doesn't either), and flux-system/ is `flux install --export`
+# output, rewritten on every regeneration - reformatting it would be a fight, not a fix.
+# The pre-commit hook names every staged YAML, the components file included (stage 14),
+# so a named file is dropped with a line saying why; the tree walk drops it silently.
 if [ $# -gt 0 ]; then
   files=("$@")
 else
-  mapfile -t files < <(git ls-files '*.yaml' '*.yml' | grep -v '/flux-system/')
+  mapfile -t files < <(git ls-files '*.yaml' '*.yml')
 fi
+judged=()
+for f in "${files[@]}"; do
+  case "$f" in
+    */flux-system/*) [ $# -gt 0 ] && echo "SKIP  $f  [flux-system: flux install --export output, the tool's style]";;
+    *) judged+=("$f");;
+  esac
+done
+files=("${judged[@]}")
 [ ${#files[@]} -gt 0 ] || { echo "PASS  style-gate: no YAML to judge"; exit 0; }
 
 pass=0; fail=0
@@ -30,7 +53,16 @@ bad() { echo "FAIL  $1${2:+  [$2]}"; fail=$((fail+1)); }
 
 echo "== style-gate: ${#files[@]} file(s) =="
 
-if out=$(docker run --rm -v "$PWD:/data:ro,z" -w /data "$KUSTOFMT_IMG" -l "${files[@]}" 2>&1); then
+# The folder and filename rules first (3.1, 3.2): layout-gate needs only yq, and
+# running it here puts it in the pre-commit hook and CI without another line.
+if out=$("$(dirname "$0")/layout-gate" "${files[@]}" 2>&1); then
+  ok "layout: one resource per file, <name>.<kind>.yaml, typed folders (layout-gate)"
+else
+  printf '%s\n' "$out" | grep -E '^(FAIL|      )' | sed 's/^/      /'
+  bad "layout: one resource per file, <name>.<kind>.yaml, typed folders" "listed above - rules 3.1 and 3.2"
+fi
+
+if out=$(kustofmt -l "${files[@]}" 2>&1); then
   ok "format matches the kustomize/kyaml house style (kustofmt)"
   printf '%s\n' "$out" | grep -i 'sops-encrypted' | sed 's/^/      /'
 else
@@ -38,7 +70,7 @@ else
   bad "format matches the house style" "listed above - fix in place: scripts/style-fix"
 fi
 
-if docker run --rm -v "$PWD:/data:ro,z" -w /data "$YAMLLINT_IMG" yamllint -c .yamllint.yaml "${files[@]}"; then
+if docker run --rm -v "$PWD:/data:ro,z" -w /data "$YAMLLINT_IMG" yamllint --strict -c .yamllint.yaml "${files[@]}"; then
   ok "yamllint clean (the rules formatting cannot express)"
 else
   bad "yamllint clean" "violations listed above - fix the YAML, not the config"

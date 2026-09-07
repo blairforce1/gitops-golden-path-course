@@ -37,6 +37,12 @@ judge() {
   local s="$1" where="$2" full="${3-}" type scope rest
   checked=$((checked+1))
 
+  # GitHub appends " (#N)" to a merge commit's subject even under merge_commit_title:
+  # PR_TITLE. The PR number is the forge's decoration, not the subject: strip it before
+  # judging, as commit-by-subject does when matching, so a revert's closing quote and
+  # the length limit see the subject the author wrote.
+  s=$(printf '%s' "$s" | sed -E 's/ \(#[0-9]+\)$//')
+
   # git's own revert subject is machine output and is never rewritten (rule 6).
   case "$s" in 'Revert "'*'"'|'Reapply "'*'"') return 0;; esac
   # Merge commits carry the PR title once merge_commit_title=PR_TITLE; the default
@@ -46,6 +52,7 @@ judge() {
   # re-uses; the real string is judged at run time by the PR check, not here.
   case "$s" in '$(git log'*'%s'*) note "$where" "title is read from git at run time (a revert's own subject)  ->  $s"; return 0;; esac
   case "$s" in '$'[A-Za-z_]*|'${'*) note "$where" "title is a shell variable, judged at run time by the PR check  ->  $s"; return 0;; esac
+  case "$s" in *'{{'*'}}'*) note "$where" "title is a template the robot renders at run time, judged then by the PR check  ->  $s"; return 0;; esac
   # A subject that IS a placeholder (usage text: pr-open <branch> "<subject>") is template,
   # not instruction - the same licence <scope> gets below.
   case "$s" in '<'*'>') return 0;; esac

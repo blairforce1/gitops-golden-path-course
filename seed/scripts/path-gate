@@ -10,10 +10,11 @@ files=$(git diff --name-only "$BASE" "$HEAD")
 [ -n "$files" ] || { echo "no changes"; exit 0; }
 
 # path prefix : what it reaches : why review is scoped to it
-rules='apps/base/|every environment at once|off-ladder: no rung to gate it on
+rules='apps/base/|every environment at once|off-ladder: no rung to gate it on - expect type refactor and an empty rendered diff (base-gate judges both)
 apps/overlays/prod/|prod|the rung the ladder exists to protect
 clusters/versions.yaml|every local and CI render|the toolchain everyone renders with
 clusters/|what a cluster IS|bindings create and re-point stamps
+infrastructure/base/|every workload on every cluster of every class at once|off-ladder: expect type refactor and an empty rendered diff (base-gate judges both)
 infrastructure/|every workload on every cluster|shared platform
 .sops.yaml|decrypt rights|the file is the access-control list
 policy/|the gates|weakening a check must be harder than failing one

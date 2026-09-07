@@ -299,7 +299,7 @@ kubectl -n ggp get deploy app                        # 1/1 - dev overlay back to
 ./scripts/checkpoint-03
 ```
 
-- [ ] `flux check` ends `✔ all checks passed`; expect one ✗ on the way: `✗ flux 2.7.5 <2.9.x (new CLI version is available, please upgrade)`. That's not a failure and **do not take its advice**: the lag behind latest OSS is the AKS pin working as intended ([rule 4.3](../rules.md#43-the-version-policy-follow-the-master-at-the-pace-kubernetes-sets), taught at stage 00). The line to actually verify is `✔ distribution: flux-v2.7.5`, meaning cluster matches CLI:
+- [ ] `flux check` ends `✔ all checks passed`; expect one ✗ on the way: `✗ flux 2.7.5 <2.9.x (new CLI version is available, please upgrade)`. That's not a failure and **do not take its advice**: the lag behind latest OSS is the AKS pin working as intended ([rule 4.3](../rules.md#43-the-version-policy-follow-the-authority-at-the-pace-kubernetes-sets), taught at stage 00). The line to actually verify is `✔ distribution: flux-v2.7.5`, meaning cluster matches CLI:
 
 ```sh
 flux check
@@ -382,7 +382,7 @@ kubectl -n ggp get deploy app -o jsonpath='{.metadata.managedFields[*].manager}'
 | Change pushed, nothing happens | The classic triad | Wrong branch? Source interval not elapsed (check `flux get sources git`)? Kustomization suspended? |
 | `wait: true` timeout but pods look fine | No health to report vs slow image pull | `flux events --for Kustomization/app-dev`; bump `timeout` if it's pull latency |
 | Prune deleted something you wanted | It wasn't in git | Correct behaviour: put it in git. That reflex change is the stage working |
-| `flux install` on a cluster that already has Flux | It upgrades in place to the CLI's version | Safe, and git's `gotk-components.yaml` reasserts whatever is merged at the next sync, so the two must agree: regenerate the file and merge it before moving the CLI (stage 16) |
+| `flux install` on a cluster that already syncs itself | The CLI refuses (`this cluster has already been bootstrapped … Please use 'flux bootstrap'`): the CRDs carry the flux-system Kustomization's labels | Nothing to install: git's `gotk-components.yaml` is the authority and the next sync applies it, which is why `cluster-sync` skips the install on such a cluster. Moving the CLI means regenerating the file and merging it, never installing over the top |
 
 ## What you learned, and what's next
 

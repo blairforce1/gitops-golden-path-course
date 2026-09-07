@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# What the ladder owes: every ascent where a rung is ahead of the one below, judged
+# against soak.yaml's min and max from git's own dates. Below min the line reads
+# SOAKING, between the two DUE, past max FAIL, and FROZEN when the freeze calendar
+# covers the rung's paths today. The prefix puts it in ./scripts/check, so every stage
+# start and every checkpoint prints it; a fleet runs it on a schedule (stage 27).
+# The logic lives in soak-gate, which judges min at the PR; this is its --due mode.
+exec "$(dirname "$0")/soak-gate" --due

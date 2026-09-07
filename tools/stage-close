@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# "Finished stage NN": is it? The boundary, read back from the config repo and the ledger.
+#   tools/stage-close NN [<config-repo>]        default ../gitops-golden-path
+# Checks: the stage-NN tag exists locally and on origin; the stage's work item is closed;
+# no seeded file has drifted (tools/sync-seed --check); STATUS.md's row for NN carries a
+# date. Then prints the lines of appendices/what-the-rules-buy.md that name this stage,
+# because they describe scripts that have now run and must match what happened, and names
+# the next stage, whose pre-flight is the next job.
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 2
+nn="${1:?usage: stage-close NN [config-repo]}"; nn=$(printf '%02d' "$((10#$nn))")
+cfg="${2:-../gitops-golden-path}"
+[ -d "$cfg/.git" ] || { echo "FAIL  no config repo at $cfg"; exit 2; }
+pass=0; fail=0
+ok()  { echo "PASS  $1"; pass=$((pass+1)); }
+bad() { echo "FAIL  $1${2:+  [$2]}"; fail=$((fail+1)); }
+
+row=$(tools/seed-backlog --roster | awk -F'\t' -v n="$nn" '$3 == "stage" && substr($4, 1, 2) == n')
+[ -n "$row" ] || { echo "FAIL  the roster has no stage $nn"; exit 1; }
+issue=$(printf '%s' "$row" | cut -f1); title=$(printf '%s' "$row" | cut -f4)
+echo "== stage-close: $title (#$issue) =="
+
+git -C "$cfg" fetch -q --tags origin 2>/dev/null
+if git -C "$cfg" rev-parse -q --verify "refs/tags/stage-$nn" >/dev/null; then
+  if git -C "$cfg" ls-remote --tags origin "stage-$nn" | grep -q "stage-$nn"; then
+    ok "tag stage-$nn exists locally and on origin"
+  else
+    bad "tag stage-$nn is on origin" "git push origin stage-$nn"
+  fi
+else
+  bad "tag stage-$nn exists" "git tag stage-$nn && git push origin stage-$nn (using the course §5)"
+fi
+
+state=$(cd "$cfg" && gh issue view "$issue" --json state -q .state 2>/dev/null || echo unknown)
+[ "$state" = CLOSED ] && ok "#$issue closed" || bad "#$issue closed" "state $state - gh issue close $issue --comment \"stage-$nn tagged\""
+
+if drift=$(cd "$cfg" && "$OLDPWD/tools/sync-seed" --check 2>&1); then
+  ok "no seed drift"
+else
+  bad "no seed drift" "tools/sync-seed 47 from the config repo, then merge it"
+  printf '%s\n' "$drift" | sed 's/^/        /'
+fi
+
+date=$(awk -F'|' -v n="$nn" '$2 ~ "^ " n " $" { gsub(/^ +| +$/, "", $3); print $3 }' STATUS.md)
+case "$date" in
+  20[0-9][0-9]-*) ok "STATUS.md row for $nn is dated ($date)";;
+  *) bad "STATUS.md row for $nn is dated" "it says '${date:-nothing}' - put today's date in the table";;
+esac
+
+# The feature-first appendix names stages by number; its rows for this stage describe
+# behaviour that has now run. Not a verdict (a script cannot read prose against a run):
+# a worklist, one line per claim, to confirm or fix before the verified commit.
+app=appendices/what-the-rules-buy.md
+claims=$(grep -nE 'stage' "$app" | grep -E "(^|[^0-9.])$nn([^0-9]|$)" || true)
+echo
+if [ -n "$claims" ]; then
+  echo "$app names stage $nn in $(printf '%s\n' "$claims" | wc -l) line(s) - confirm each against what ran, fix what moved:"
+  printf '%s\n' "$claims" | cut -c1-160 | sed 's/^/        /'
+else
+  echo "$app names stage $nn nowhere - nothing to confirm there"
+fi
+
+next=$(tools/seed-backlog --roster | awk -F'\t' -v n="$nn" '$3 == "stage" && substr($4, 1, 2) > n' | head -1)
+echo
+echo "stage-close: $pass passed, $fail failed"
+[ -n "$next" ] && echo "next: $(printf '%s' "$next" | cut -f4) ($(printf '%s' "$next" | cut -f5), #$(printf '%s' "$next" | cut -f1)) - pre-flight it"
+[ "$fail" -eq 0 ]

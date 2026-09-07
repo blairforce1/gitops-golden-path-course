@@ -18,13 +18,13 @@ Maintainers' ledger, not course material: the date each stage and checkpoint was
 | 09 | 2026-09-02 |
 | 10 | 2026-09-02 |
 | Act III checkpoint | 2026-09-02 |
-| 11 | - |
-| 12 | - |
-| 13 | - |
-| 14 | - |
-| 15 | - |
-| 16 | - |
-| Act IV checkpoint | stub |
+| 11 | 2026-09-04 |
+| 12 | 2026-09-04 |
+| 13 | 2026-09-05 |
+| 14 | 2026-09-06 |
+| 15 | 2026-09-06 |
+| 16 | 2026-09-07 |
+| Act IV checkpoint | 2026-09-07 |
 | 17 | - |
 | 18 | - |
 | 19 | - |

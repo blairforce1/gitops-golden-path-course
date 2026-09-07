@@ -27,9 +27,17 @@ if [ -z "$nums" ]; then
   exit 1
 fi
 fails=0
+err=$(mktemp); trap 'rm -f "$err"' EXIT
 for n in $nums; do
-  if ! j="$(gh api "repos/$repo/issues/$n" 2>/dev/null)"; then
-    echo "FAIL  #$n does not exist in $repo"; fails=$((fails + 1)); continue
+  if ! j="$(gh api "repos/$repo/issues/$n" 2>"$err")"; then
+    # a 404 is a missing issue; anything else is the caller's token or the network,
+    # and saying "does not exist" for a 403 sends the reader to the wrong fix
+    if grep -q 'HTTP 404' "$err"; then
+      echo "FAIL  #$n does not exist in $repo"
+    else
+      echo "FAIL  cannot read #$n in $repo - $(head -1 "$err") (a token without issues: read? in CI, the job's permissions: block)"
+    fi
+    fails=$((fails + 1)); continue
   fi
   if printf '%s' "$j" | jq -e '.pull_request' >/dev/null; then
     echo "FAIL  #$n is a pull request, not a work item"; fails=$((fails + 1)); continue

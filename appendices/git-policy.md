@@ -114,4 +114,4 @@ git config --local pull.rebase false                       # merges here too - s
 | What did issue #142 actually change, and where did it land? | `--grep='^Closes: #142'` on the body, then the merge commit's first parent |
 | Release notes, per cluster | the cluster's `lastAppliedRevision` as the range → git-cliff ([stage 26](../act-6/stage-26.md)) |
 
-None of these are possible against prose subjects and squashed history. That is the argument.
+None of these are possible against prose subjects and squashed history. That is the argument. The wider list, every feature and the rules that build it, and what git and GitHub give for free, is [what the rules buy](what-the-rules-buy.md).

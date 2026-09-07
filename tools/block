@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Print one paste block of a stage, so a block never travels through a terminal's copy
+# buffer (which pads lines and breaks heredoc terminators and line continuations).
+#   tools/block NN            list the stage's sh blocks: number, step, first line
+#   tools/block NN k          print block k; run it from the config repo root with
+#                             tools/block NN k | bash   (or read it first)
+#   tools/block act-N [k]     the same for an act checkpoint
+set -uo pipefail
+cd "$(dirname "$(readlink -f "$0")")/.." || exit 2   # the course repo, wherever this is run from
+what="${1:?usage: block NN [k] | block act-N [k]}"; k="${2:-}"
+case "$what" in
+  act-[0-9]) f="$what/act-checkpoint.md";;
+  *) f=$(ls act-*/stage-"$(printf '%02d' "$((10#$what))")".md 2>/dev/null | head -1);;
+esac
+[ -f "${f:-}" ] || { echo "block: no stage or checkpoint '$what'" >&2; exit 1; }
+awk -v K="$k" '
+  /^#+ / && !insh { step = $0 }
+  /^```sh/ { n++; insh = 1; first = ""; next }
+  /^```/ && insh { insh = 0; if (K == "") printf "%3d  %-46.46s  %s\n", n, step, first; next }
+  insh { if (K == "" && first == "" && $0 !~ /^[[:space:]]*(#|$)/) first = $0
+         if (K != "" && n == K) print }
+' "$f"

@@ -139,7 +139,7 @@ Private is the honest default for a config repo. What visibility does and doesn'
 for t in kind kubectl flux kustomize helm gh yq; do command -v $t >/dev/null && echo "ok  $t" || echo "MISSING  $t"; done
 kind --version          # 0.31+
 gh auth status          # logged in as YOUR account
-# the toolchain gate: flux, kustomize, helm, kubectl - each pinned to its one master;
+# the toolchain gate: flux, kustomize, helm, kubectl - each pinned to its one authority;
 # every FAIL prescribes its own install one-liner
 ./scripts/check
 ```
@@ -155,7 +155,7 @@ source ./env.sh
 echo "$GH_OWNER / $CONFIG_REPO -> $APP_IMAGE"   # sanity: your identity, derived, not typed
 ```
 
-Anything MISSING installs from your package manager or the vendor's instructions as usual, **except flux, kustomize, helm, and kubectl**, which are *pinned*, each to exactly one master (the **render rule**, [rule 4.1](../rules.md#41-the-render-rule-one-master-per-tool-and-kubectl-never-renders)): flux to the AKS-supported release (the reflex `curl | bash` install grabs latest, which runs *ahead*; see the version policy below); kustomize and helm to the libraries the flux controllers *actually embed*, sometimes pinned **back** by a go.mod `replace` to dodge an upstream regression, so neither "latest" nor flux's own version string is the truth; kubectl to the dev rung of the Kubernetes version ladder (`clusters/versions.yaml`; the pin file is born at stage 06 and the ladder declared at stage 07, so today any current kubectl serves and the ladder gate says SKIP). Don't guess any pin: `./scripts/check` derives them all from the dependency graph and FAILs with the exact install one-liner for anything wrong.
+Anything MISSING installs from your package manager or the vendor's instructions as usual, **except flux, kustomize, helm, and kubectl**, which are *pinned*, each to exactly one authority (the **render rule**, [rule 4.1](../rules.md#41-the-render-rule-one-authority-per-tool-and-kubectl-never-renders)): flux to the AKS-supported release (the reflex `curl | bash` install grabs latest, which runs *ahead*; see the version policy below); kustomize and helm to the libraries the flux controllers *actually embed*, sometimes pinned **back** by a go.mod `replace` to dodge an upstream regression, so neither "latest" nor flux's own version string is the truth; kubectl to the dev rung of the Kubernetes version ladder (`clusters/versions.yaml`; the pin file is born at stage 06 and the ladder declared at stage 07, so today any current kubectl serves and the ladder gate says SKIP). Don't guess any pin: `./scripts/check` derives them all from the dependency graph and FAILs with the exact install one-liner for anything wrong.
 
 ```sh
 ./scripts/check-flux-aks-parity
@@ -177,7 +177,7 @@ docker --version                      # → "podman version x.y.z" - the bridge 
 
 `scripts/cluster-up` detects docker-that-is-podman and still sets kind's podman provider correctly: kind is the one tool that must know the truth.
 
-**Flux version policy** ([rule 4.3](../rules.md#43-the-version-policy-follow-the-master-at-the-pace-kubernetes-sets)): the local Flux mirrors the release bundled in AKS's `microsoft.flux` extension. Act VIII's "AKS absorbs what you built by hand" is only honest if local and managed Flux agree, and OSS Flux typically runs a minor ahead of the extension. `./scripts/check-flux-aks-parity` scrapes [Microsoft's release notes](https://learn.microsoft.com/azure/azure-arc/kubernetes/flux-gitops-release-notes) and compares (PASS on same minor line, FAIL on minor drift with the pin command, WARN if the scrape breaks). Re-run it at each stage start; it also runs on a schedule in CI so drift surfaces without anyone remembering to look.
+**Flux version policy** ([rule 4.3](../rules.md#43-the-version-policy-follow-the-authority-at-the-pace-kubernetes-sets)): the local Flux mirrors the release bundled in AKS's `microsoft.flux` extension. Act VIII's "AKS absorbs what you built by hand" is only honest if local and managed Flux agree, and OSS Flux typically runs a minor ahead of the extension. `./scripts/check-flux-aks-parity` scrapes [Microsoft's release notes](https://learn.microsoft.com/azure/azure-arc/kubernetes/flux-gitops-release-notes) and compares (PASS on same minor line, FAIL on minor drift with the pin command, WARN if the scrape breaks). Re-run it at each stage start; it also runs on a schedule in CI so drift surfaces without anyone remembering to look.
 
 Deliberately **not** in the install list: kubeconform, and later conftest/trivy. Pure filters run as version-pinned containers instead (the tool provisioning rule, [rule 4.2](../rules.md#42-tool-provisioning-filters-from-images-operators-installed)): pinned in the command, identical image in CI. First use: stage 02's schema check.
 
@@ -228,7 +228,12 @@ Why public at all: every cluster in Acts I-VI pulls this image **anonymously** -
 
 > Tag mapping: git tag `v0.1.0` → image tag **`0.1.0`** (`type=semver,pattern={{version}}` strips the `v`). Expect **one** Actions run, for the tag push, titled with the tagged commit's message; the tag lives in the run's ref column. The `main` pushes (the generation's initial commit, your `chore: first publish`) fired nothing. In the registry, `0.1.0`, `sha-…` and `latest` are three labels on a single digest.
 
-- [ ] The CI run is green (`gh run list` in the app repo, or the Actions tab).
+- [ ] The CI run is green:
+
+```sh
+source ./env.sh
+gh run list -R "$GH_OWNER/$APP_REPO" --limit 1
+```
 - [ ] The registry shows what you think it shows:
 
 ```sh

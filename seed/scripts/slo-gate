@@ -79,8 +79,12 @@ echo "== slo-gate: $CLUSTER over $WINDOW (SLO >=$TARGET from git, p95 <=${P95_MA
 # the hub. The revision is the applied SOURCE revision, so any merge to main resets both
 # answers - over-strict for an unrelated commit, and honestly so: the bits on the rung changed.
 STAMP="${SLO_STAMP:-app-${CLUSTER%%-*}}"
-secs() { case "$1" in *h) echo $(( ${1%h} * 3600 ));; *m) echo $(( ${1%m} * 60 ));; *s) echo "${1%s}";; *) echo "$1";; esac; }
-MIN_SOAK="${SLO_MIN_SOAK:-2m}"; soak_s=$(secs "$MIN_SOAK"); win_s=$(secs "$WINDOW")
+secs() { case "$1" in *d) echo $(( ${1%d} * 86400 ));; *h) echo $(( ${1%h} * 3600 ));; *m) echo $(( ${1%m} * 60 ));; *s) echo "${1%s}";; *) echo "$1";; esac; }
+# The minimum residency is the soak soak.yaml declares for the ascent off this rung (stage 16)
+# when the repo has one, else 2m; SLO_MIN_SOAK overrides either for a what-if.
+next=$(case "${CLUSTER%%-*}" in dev) echo prod;; *) echo dev;; esac)
+declared=$(yq -r ".image.$next // \"\"" soak.yaml 2>/dev/null); case "$declared" in *"min:"*) declared=$(yq -r ".image.$next.min // \"\"" soak.yaml);; esac
+MIN_SOAK="${SLO_MIN_SOAK:-${declared:-2m}}"; soak_s=$(secs "$MIN_SOAK"); win_s=$(secs "$WINDOW")
 look=$(( 2 * (win_s > soak_s ? win_s : soak_s) )); [ "$look" -lt 600 ] && look=600
 qlabel() { curl -s --max-time 10 "http://localhost:$PORT/api/v1/query" --data-urlencode "query=$1" \
            | yq -p=json ".data.result[0].metric.$2 // \"\"" 2>/dev/null; }

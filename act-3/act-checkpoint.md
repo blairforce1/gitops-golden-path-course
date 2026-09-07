@@ -565,138 +565,9 @@ One row, and it can only mirror the fleet: `applied` is three because the break 
 
 ## AI enhancement
 
-**How.** One skill per drill, each stopping where the human's line is: the merge, the tag, the closing of the item. The scripts give the verdicts; the skills assemble and write. Run them from the config repo in Claude Code, on `main` with a clean tree, in the order below: the three that read this checkpoint's evidence first, the rebuild last, because a rebuild erases what the clusters hold (events, `status.history`, and this time the hub's store) and leaves only the durable artifacts. Each skill's check follows its call, while the evidence it reads still exists; the Verify at the end is only what the rebuild leaves. The table below is what the checks compare against, so it is filled in by hand first.
+**How.** One skill, `run-drill`, running drill 1 again as one script and stopping where the human's line is: the tag and the closing of the item. The other drills are not repeated: the skills they use have their second outings inside the stages (`promote` at stages 07 and 09, `fleet-triage` at 04 and 09) and in Act VI's audit drill (`audit-evidence`). Run it from the config repo in Claude Code, on `main` with a clean tree. The rebuild erases what the clusters hold (events, `status.history`, and this time the hub's store), which is why drill 5 ran by hand before it.
 
-**Drill 2, the promotion.** `promote` gathers the evidence for one pin move and opens the PR with a body that is the deployment record, both signatures quoted verbatim: dev's green context on the source commit, and `slo-gate` on dev. The dev pin is not a promotion and stays yours; so does the probe, since a gate over zero requests is a FAIL.
-
-**Step 1: traffic.** The probe, in its own terminal, left running until the prod rung is green:
-
-```sh
-curl -s -X PUT -d 'checkpoint probe' http://localhost:8081/notes/slo
-while true; do curl -s -o /dev/null http://localhost:8081/notes/slo; sleep 0.5; done
-```
-
-**Step 2: a release on rung 1, by your hands.** Mint it (dated tag, publish runs ~2–3m):
-
-```sh
-source ./env.sh
-cd "$APP_DIR" && git pull
-TAG="v0.1.1-run$(date +%Y%m%d%H%M%S)"
-git tag "$TAG" && git push origin "$TAG"
-echo -n "waiting for the registry to have ${TAG#v} (multi-arch build, ~2-3m) "
-until docker manifest inspect $APP_IMAGE:${TAG#v} >/dev/null 2>&1; do printf .; sleep 10; done; echo
-cd -
-```
-
-Pin dev by PR:
-
-```sh
-source ./env.sh
-(cd apps/overlays/dev && kustomize edit set image $APP_IMAGE:${TAG#v})
-git add apps/overlays/dev
-./scripts/pr-open pin/14/dev-${TAG#v} "pin(app-dev): app ${TAG#v}" <<EOF
-## What is moving
-Dev's app pin to ${TAG#v}.
-
-## Why now
-Act III checkpoint, AI enhancement: a release for the promote skill to move.
-
-## Evidence
-The image exists on GHCR (polled above).
-
-## If it is wrong
-Revert this merge; prod has not moved.
-
-Refs: #14
-EOF
-```
-
-Read it; when the diff is what the body claims, merge, then time the rung, which is also the wait for dev's green:
-
-```sh
-gh pr checks --watch --fail-fast \
-&& gh pr merge --merge --delete-branch \
-&& git switch main \
-&& git pull
-./scripts/rung-time "pin(app-dev): app ${TAG#v}" \
-  kustomization/app-dev/dev-01 kind-ggp-dev-01 app-dev
-```
-
-**Step 3: the skill**, with the stamp and the target rung. The version is never an argument; it is what the rung below serves:
-
-```
-/promote app app-prod
-```
-
-Expect one of two endings. Too early, it stops with the gate's own words as the reason, `candidate applied on dev-01`, `candidate soaked NNs of the 2m required` or `traffic over 10m: NONE`, and it neither waits nor investigates: wait it out and ask again. On time, it prints the PR URL and the merge line, and the PR's `## Evidence` section carries dev's green context line with its timestamp, the whole `slo-gate` output down to its `slo-gate: N passed, 0 failed` summary, the freeze and path gates, and the rendered diff as one line.
-
-**Step 4: merge on the diff**, time the rung it moved, and stop the probe:
-
-```sh
-gh pr checks --watch --fail-fast \
-&& gh pr merge --merge --delete-branch \
-&& git switch main \
-&& git pull
-./scripts/rung-time "promote(app-prod): app ${TAG#v}" \
-  kustomization/app-prod/prod-01 kind-ggp-prod-01 app-prod
-```
-
-**Check it.** `rung-time` gave the rung its number (the skill promotes, it does not measure). The body quotes both gates verbatim with `slo-gate`'s summary line, and the merge moved one pin in one file:
-
-```sh
-sha=$(./scripts/commit-by-subject "promote(app-prod): app ${TAG#v}")
-gh pr list --state merged --search "$sha" --json body --jq '.[0].body' \
-  | grep -n 'slo-gate:\|kustomization/app-dev/dev-01\|^- '
-# → "slo-gate: N passed, 0 failed", dev's green context, one bullet per gate
-git diff --stat "$sha^1" "$sha"     # → apps/overlays/prod/kustomization.yaml, and nothing else
-```
-
-**Drill 3, the break, read back.** `fleet-triage` answers "which rung, which layer, since when" from an identifier: it splits the context into the binding file and the kube context, walks the ladder top-down on that cluster, reads the two facts, `lastAppliedRevision` and the status sequence, and runs `detect-time` for since-when. Prod is already restored, so ask about the break commit:
-
-```
-/fleet-triage kustomization/app-prod/prod-01, for the break(app-prod): absent image commit
-```
-
-Expect what you found by hand in drill 3, in this order: the health layer; the reason strings verbatim, `timeout waiting for: [Deployment/ggp/app status: 'InProgress']` then `stalled resources: [Deployment/ggp/app status: 'Failed']` from the stamp (its events while they last, the kustomize-controller log after that) and `Failed to pull image ...: not found` from the pod, which by now is the dossier's copy, the pod and its events being gone with the revert; that prod never applied it, `lastAppliedRevision` naming the promotion throughout; the two numbers, `left Ready` and `confirmed red`, agreeing with your record; and the revert as the fix, already merged. On the 2.8.8 pin it must read the absent context as the red and the Unknown samples as part of the failure. If it hunts for a `failure` status, calls the Unknown a pause, or proposes a `kubectl` fix, that is a defect in the skill: it reads only.
-
-**Check it** now, while the hub still holds the samples; the rebuild below takes them. Its two numbers, against your drill 3 record:
-
-```sh
-./scripts/detect-time app-prod kind-ggp-prod-01 'break(app-prod): '
-```
-
-**Drill 4, the dossier, on a different question.** Drill 4 already ran `audit-evidence` on the break, so its second outing takes the skill's second shape, one PR: the promotion it opened for you in drill 2, audited by the same hands that wrote its body. Same fixed shape (the question verbatim as the title, the controls exercised, a timeline with one source per line, findings, gaps), same landing: it writes `docs/audits/<date>-<slug>.md`, stages it, opens the PR with `pr-open` citing `#14`, and stops on that branch. The merge is yours, checks first, and before the item is closed, because `issue-gate` requires the cited issue open at merge. `N` is the PR number `promote` printed in step 3, and the newest merged promotion if that scrollback is gone:
-
-```sh
-gh pr list --state merged --limit 50 --json number,title \
-  --jq '[.[] | select(.title | startswith("promote(app-prod): app"))][0] | "\(.number)  \(.title)"'
-```
-
-```
-/audit-evidence who approved the promotion of app to prod in PR #N, and on what evidence?
-```
-
-Expect the PR record and its merge commit as the scope; a timeline from the dev pin's merge through dev's green context, the `slo-gate` run, the PR's opening, its check, your merge and prod's applied revision, one source per line; and two findings stated plainly: the evidence is the two signatures quoted verbatim in the body, and the approval was your merge on a read diff with no reviewer, which on a one-person repo is the truth and not a gap. The gap it should name is the hub: the `slo-gate` verdict survives in the PR body, the samples behind it do not.
-
-**Check it** after the merge: landed by PR citing the work item, no timeline row without a source, and it names the promotion's merge commit:
-
-```sh
-git log --first-parent -1 --format='%h  %s%n%(trailers:key=Refs)' -- docs/audits
-sed -n '/^## Timeline/,/^## Findings/p' docs/audits/*.md | grep '^| 20' | awk -F'|' '$4 ~ /^ *$/ { print "no source: " $0 }'
-# → (nothing: every row has a source)
-grep -l "$(./scripts/commit-by-subject "promote(app-prod): app ${TAG#v}" | cut -c1-7)" docs/audits/*.md
-# → the skill's dossier
-```
-
-**Drill 5** has no skill: the four numbers are one command, and the judgment is in reading them. Run it once more now, before the rebuild takes the store:
-
-```sh
-./scripts/dora --window 6h --stages
-```
-
-Expect three changes where drill 5 had two, and a second release row in the table whose `review` interval is how long the skill's PR waited for your merge.
-
-**Drill 1, the rebuild, last.** `run-drill` runs `scripts/act-3-drill`, drill 1 as one script: three clusters down and up, `cluster-sync` each, the root keys paid, the fleet converged with the monitoring stack included, checkpoints 07 to 09, and the number from artifacts. It runs the script detached and reads its log, since the drill outlives a tool call, and writes the pack on `#14`: the number with its source, the findings. Be on `main` with a clean tree; the script refuses otherwise. Bare, it prints what it would destroy and refuses:
+**Drill 1, the rebuild.** `run-drill` runs `scripts/act-3-drill`, drill 1 as one script: three clusters down and up, `cluster-sync` each, the root keys paid, the fleet converged with the monitoring stack included, checkpoints 07 to 09, and the number from artifacts. It runs the script detached and reads its log, since the drill outlives a tool call, and writes the pack on `#14`: the number with its source, the findings. Be on `main` with a clean tree; the script refuses otherwise. Bare, it prints what it would destroy and refuses:
 
 ```
 /run-drill rebuild act-3
@@ -710,11 +581,11 @@ Then, having read the blast radius, the run. Longer than Act II's nine minutes: 
 
 Expect the skill to poll `/tmp/act-3-drill.log` (`tail -n 5` on it if you want to watch too), report `fleet-from-nothing: NNNs` from the results line, and comment the pack on `#14`. Expect one thing gone: the hub's store went with the hub, so `dora` now knows nothing before the rebuild. That is stage 10's retention warning in the flesh, and why drill 5 ran before this.
 
-**Why.** This checkpoint is the first with an SLO in the loop, so the judgment in drill 2 (no traffic is a FAIL; a candidate the rung has not soaked is not measured) and drill 3 (the cascade is not a failure; Unknown is) is exactly what the skills encode. The gates still decide, and a skill stops at the gate's words.
+**Why.** A drill's value is the evidence pack, and the pack is where hand-run drills go thin: the number gets typed from memory. The script gives the verdicts and the number; the skill sequences the run and writes the pack.
 
 **Where.** After the checkpoint has been run by hand once, and before its work item is closed: the skills' PRs cite `#14`, and `issue-gate` wants it open at merge.
 
-**Verify.** What the rebuild leaves; the promotion, the triage and the dossier were each checked at their step, against evidence the rebuild has since taken. The pack: the number on the work item agrees with the table below, and the store is empty behind it:
+**Verify.** What the rebuild leaves. The pack: the number on the work item agrees with the table below, and the store is empty behind it:
 
 ```sh
 gh issue view 14 --comments | grep -in 'fleet-from-nothing'

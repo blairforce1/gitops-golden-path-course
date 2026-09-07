@@ -3,6 +3,7 @@
 # stop before the merge.
 #
 #   ../gitops-golden-path-course/tools/sync-seed <issue>      (from the config repo root)
+#   ../gitops-golden-path-course/tools/sync-seed --check      list drift, exit 1 if any, touch nothing
 #
 # Stage 00 copies the gates, checkpoints, drills, skills, decisions and templates into
 # the config repo once. When the course repairs one of those files afterwards, the seeded
@@ -15,8 +16,13 @@
 set -euo pipefail
 die() { printf 'sync-seed: %s\n' "$1" >&2; exit 1; }
 
-issue="${1:?usage: sync-seed <issue-number>}"
-[[ "$issue" =~ ^[0-9]+$ ]] || die "issue must be a number, e.g. 47"
+check=0
+if [ "${1:-}" = --check ]; then
+  check=1; issue=0   # report drift and exit 1 if any; copy nothing, open nothing
+else
+  issue="${1:?usage: sync-seed <issue-number> | sync-seed --check}"
+  [[ "$issue" =~ ^[0-9]+$ ]] || die "issue must be a number, e.g. 47"
+fi
 
 COURSE="$(cd "$(dirname "$0")/.." && pwd)"
 [ -f "$COURSE/using-the-course.md" ] || die "cannot find the course root above $0"
@@ -44,6 +50,11 @@ while IFS= read -r f; do
 done < <(comm -23 \
   <(git ls-files scripts decisions .claude/skills | sort) \
   <(git -C "$COURSE" ls-files 'seed/scripts' 'seed/decisions' 'seed/.claude/skills' | sed 's|^seed/||' | sort))
+
+if [ "$check" = 1 ]; then
+  if [ ${#drifted[@]} -eq 0 ]; then echo "in sync: every seeded file matches the course"; exit 0; fi
+  echo "seed drift (course -> config repo), sync owed:"; printf '  %s\n' "${drifted[@]}"; exit 1
+fi
 
 resume=0
 if [ ${#drifted[@]} -eq 0 ]; then

@@ -138,6 +138,8 @@ This matters because it is what DORA is *for*. The four metrics exist to expose 
 | **review** | PR opened → PR merged | Wall clock, so it includes waiting *for* a reviewer, usually the larger half, and the one a team can actually shorten |
 | **merge→prod** | PR merged → running on prod | The only interval the headline covers |
 
+The four numbers above needed none of this: they are metric samples and commit timestamps looked up by sha, and nothing in [Part 2 of the rules](../rules.md#part-2---the-change-record) was involved. This breakdown is where the convention starts to pay.
+
 **Yes, PR review time is capturable, and precisely**: `gh pr list --json createdAt,mergedAt,mergeCommit` gives it to the second. The hard part was never the timestamps; it was the **join**. Linking a production deployment back to the dev commit that started it means recognising that two commits in different weeks describe the same change, and [the commit convention](../appendices/commit-convention.md) is what makes that a query rather than a guess:
 
 ```
@@ -145,7 +147,7 @@ pin(app-dev):     app 0.1.1-run20260822213701
 promote(app-prod): app 0.1.1-run20260822213701
 ```
 
-Same version token, two grammatical subjects, one join key. Nothing else in the system links those two commits: not the diff, not the author, not the timing. **This is the convention paying for itself in a way that would have been very hard to argue for in advance**, and it is worth noticing that the payoff arrived two acts after the discipline did.
+Same version token, two grammatical subjects, one join key. The diff carries the same tag, in `newTag` on each overlay, but reading it means parsing every promotion's diff against every pin's; the author and the timing say nothing. The subject makes the join one regex over one line. **This is the convention paying for itself in a way that would have been very hard to argue for in advance**, and it is worth noticing that the payoff arrived two acts after the discipline did.
 
 ### What is still not measured
 
@@ -238,7 +240,11 @@ State this next to the dashboard, or the dashboard will be misread:
 
 ## Stop & measure
 
-- `./scripts/dora --window 7d` prints one block of four production numbers with its denominator, and the reconciles → applications → changes line narrows in that order.
+- [ ] One block of four production numbers with its denominator, and the reconciles → applications → changes line narrows in that order (step 4 shows the shape):
+
+```sh
+./scripts/dora --window 7d
+```
 - The lead time is **commit → first production arrival**, and `convergence` is a separate line. With one production tenant you cannot tell them apart; with two you can. Add a second production tenant ([stage 22](../act-6/stage-22.md)) and confirm that one change reaching both counts as **one** deployment, with a lead time equal to the *faster* arrival and a convergence figure covering the gap.
 - `--by tenant` reports a column called `applied`, not `deploys`, and its rows sum to more than the deployment count. Confirm you can explain why that is correct.
 - `--rungs` shows dev and platform labelled as **not DORA**. If you ever quote a number from that block as a DORA metric, the label is there to stop you.
@@ -274,7 +280,7 @@ git tag stage-10 \
 
 **An undocumented start point makes a lead time incomparable, including to your own, last quarter.** The headline here begins at the *promotion*, which on an automated fleet is minutes from production and is the least interesting interval in the chain. On one real change in this repo it reported 2 minutes for something that took 6 days 21 hours commit-to-production, almost all of it waiting for somebody to open a PR. DORA exists to expose that inefficiency; a metric that measures only the automated hop reports that the automated hop is fine.
 
-**PR review time is capturable to the second: the timestamps were never the hard part.** `gh` has `createdAt` and `mergedAt`. The hard part is the *join*: recognising that a `pin(app-dev)` commit and a `promote(app-prod)` commit two weeks apart describe the same change. Not the diff, not the author, not the timing: nothing in the system links them except the version token in their subjects, which is there only because [the commit convention](../appendices/commit-convention.md) put it there. That payoff arrived three quests after the discipline did, which is roughly how conventions always pay.
+**PR review time is capturable to the second: the timestamps were never the hard part.** `gh` has `createdAt` and `mergedAt`. The hard part is the *join*: recognising that a `pin(app-dev)` commit and a `promote(app-prod)` commit two weeks apart describe the same change. The diff holds the same tag but has to be parsed per commit; the author and the timing say nothing. The version token in their subjects links them in one regex, and it is there only because [the commit convention](../appendices/commit-convention.md) put it there. That payoff arrived three quests after the discipline did, which is roughly how conventions always pay.
 
 **Design these for meaning, not for tamper-resistance.** They are yours; gaming them cheats only you. Which moves the real risk from deliberate cheating to *inadvertent* cheating, where the numbers improve and nobody notices why: a canary tenant that takes no real traffic, one change split across five commits, failed deployments quietly excluded. The guard is not a cleverer formula. It is publishing the denominator, refusing to make them targets, and checking whether the *measurement* changed before believing the *work* did.
 

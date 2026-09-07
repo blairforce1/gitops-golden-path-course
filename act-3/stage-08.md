@@ -314,7 +314,7 @@ jobs:
       # (see scripts/check-kustomize-flux-parity for how that pin is derived)
       run: |
         v=$(yq -r '.kustomize' clusters/versions.yaml)
-        curl -sL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv$v/kustomize_v${v}_linux_amd64.tar.gz" \
+        curl -sfL --retry 3 --retry-delay 5 "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv$v/kustomize_v${v}_linux_amd64.tar.gz" \
           | sudo tar xz -C /usr/local/bin
         kustomize version
     - name: render and test overlays
@@ -354,7 +354,7 @@ gh pr merge --merge --delete-branch \
 && git pull
 ```
 
-Then look at where the verdict *lives*: `gh pr view --web` shows the check on the PR; `gh run view --web` opens the run in the Actions tab. The green check was produced by the same `policy-gate` file you ran in your terminal minutes ago. From now on every PR in this repo carries that check *before* merge.
+Then look at where the verdict *lives*: `gh pr view --web` shows the check on the PR; `gh run view --web` opens the run in the Actions tab. The green check was produced by the same `policy-gate` file you ran in your terminal minutes ago. From now on every PR in this repo carries that check *before* merge, and every PR and every merge spends a minute or two of GitHub-hosted runner time, which a private repository meters against the plan's monthly allowance (the README's "Before you start" gives the numbers; a run of the course stays well inside it).
 
 **Now make it a requirement, not a decoration.** A check that merely appears can be merged past; the ruleset from stage 00 can be told to refuse the merge until it passes. One line. The ruleset is *amended*, never rewritten, and this is the first of three times it grows ([rule 1.3](../rules.md#13-protection-from-day-zero-nothing-reaches-main-except-a-merged-pr)):
 

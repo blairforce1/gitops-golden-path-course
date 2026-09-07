@@ -11,7 +11,11 @@ A promotion is one pin moved by one PR, on evidence. This skill gathers the evid
 
 ## 1. Establish what would move
 
-- The stamp and the target rung are given; the version is what the rung below is serving now, never newer.
+- The stamp and the target rung are given; the version is what the rung below is serving now, never newer. Given nothing, read what the ladder owes and take the first `DUE` line as the stamp and rung; its work item (`soak-gate --due --items` opens one) is the `Closes:` of the PR:
+
+```sh
+./scripts/check-ladder-due
+```
 - Read the lower rung's pin and the target's pin from the overlays' `kustomization.yaml` (`yq '.images[0].newTag'`), and the lower rung's applied revision:
 
 ```sh
@@ -45,7 +49,15 @@ gh api "repos/{owner}/{repo}/commits/<sha>/statuses" --paginate \
 
 The SLO judge is built at stage 09, so before it this act has one signature. `slo-gate` says which era it is in its first line: `SKIP` (no SLO rule in git yet) means convergence is the only signature, and the body says so under performance; `FAIL` is a verdict and stops the skill. Do not investigate a FAIL, and do not read the course to decide what the era expects: the repo and the gate's own words are the whole source.
 
-Quote both outputs verbatim into the PR body. Never summarise a gate's output into "checks passed".
+**Soak.** The lower rung has served the candidate for the length `soak.yaml` declares, read from git's dates. A FAIL stops the skill unless the asker names the reason for a `Soak-waived:` trailer; the trailer goes in the body and the reason is quoted:
+
+```sh
+./scripts/soak-gate image prod
+```
+
+Before stage 16 there is no `soak.yaml` and the gate says so (`OK  no soak.yaml`): residency is then `slo-gate`'s minimum alone.
+
+Quote every output verbatim into the PR body. Never summarise a gate's output into "checks passed".
 
 ## 3. The calendar and the reach
 
@@ -75,6 +87,7 @@ git add apps/overlays/<target-env>
 - artifact: <the digest, and that the lower rung's running pod reports the same one>
 - convergence: <the green context line, with its timestamp>
 - performance: <the slo-gate output, verbatim>
+- soak: <the soak-gate line, verbatim>
 - calendar: <freeze-gate output>; reach: <path-gate output>
 - rendered diff: <the one-line diff>
 

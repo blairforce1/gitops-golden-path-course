@@ -1,4 +1,4 @@
-# 0010. One master per tool, and kubectl never renders
+# 0010. One authority per tool, and kubectl never renders
 
 - **Status:** accepted
 - **Date:** 2026-08-12
@@ -7,7 +7,7 @@
 
 ## Context
 
-Flux embeds the kustomize Go library, so a local `kustomize build` can diverge from what kustomize-controller renders, and the divergence can be live: a kustomize release with a namespace-propagation regression led the controller to carry a go.mod `replace` pinning its library back to an older version, while the flux CLI's own embedded kustomize moved ahead. The same shape applies to helm (helm-controller embeds `helm/v3`) and to sops and age (kustomize-controller decrypts what the CLI encrypted, using its own embedded libraries, and sops has real cross-version history). kubectl embeds kustomize too, but kubectl's version answers to the Kubernetes ladder, the wrong master for rendering. A workstation's tools drift ahead of all of these by default.
+Flux embeds the kustomize Go library, so a local `kustomize build` can diverge from what kustomize-controller renders, and the divergence can be live: a kustomize release with a namespace-propagation regression led the controller to carry a go.mod `replace` pinning its library back to an older version, while the flux CLI's own embedded kustomize moved ahead. The same shape applies to helm (helm-controller embeds `helm/v3`) and to sops and age (kustomize-controller decrypts what the CLI encrypted, using its own embedded libraries, and sops has real cross-version history). kubectl embeds kustomize too, but kubectl's version answers to the Kubernetes ladder, the wrong authority for rendering. A workstation's tools drift ahead of all of these by default.
 
 ## Decision
 
@@ -15,7 +15,7 @@ Every tool in the chain is pinned to exactly one authority, so no pairwise compa
 
 ## Considered options
 
-- **Latest everything.** The default; the workstation ran ahead of every master on the day the rule was written.
+- **Latest everything.** The default; the workstation ran ahead of every authority on the day the rule was written.
 - **Pin to the flux CLI's embedded versions.** The CLI and the controller can disagree; the controller renders in production, so it is the truth.
 - **Package-manager installs.** A package manager cannot install a pin; a release binary can. Pinned tools install from release binaries.
 

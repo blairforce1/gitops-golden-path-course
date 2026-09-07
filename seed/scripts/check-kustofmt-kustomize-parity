@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# The kustofmt<->kustomize parity gate: the house style is "what kustomize emits",
+# and that is only true while kustofmt links the kyaml the pinned kustomize ships.
+# kustofmt is released one build per kyaml (its compatibility.yaml maps every
+# kustomize release to the kustofmt built from the same library), so the pin is a
+# lookup, not a guess. kustofmt installs natively (a writer under -w and a hook on
+# every commit: the operator side of rule 4.2 wins), so this gate also hands out
+# the install, as the other check-* gates do. Two readings that must agree:
+#   the installed binary's own -version line -> the kyaml it links (local, no network)
+#   kustofmt's compatibility.yaml -> the kyaml the pinned kustomize release ships
+#     (each row re-derived by kustofmt's CI from upstream's go.mod at the tag)
+# The binary is asked rather than the table because a packaging-only release adds
+# no row; the table is asked for kustomize because nothing installed can say it.
+set -uo pipefail
+
+cd "$(dirname "$0")/.."
+VERSIONS=clusters/versions.yaml
+COMPAT=repos/blairforce1/kustofmt/contents/compatibility.yaml
+pass=0; fail=0
+ok()  { echo "PASS  $1"; pass=$((pass+1)); }
+bad() { echo "FAIL  $1${2:+  [$2]}"; fail=$((fail+1)); }
+
+echo "== check-kustofmt-kustomize-parity: format like kustomize emits =="
+
+[ -f "$VERSIONS" ] || { echo "SKIP  no $VERSIONS yet (born at stage 06; kustofmt is pinned there at stage 11)"; exit 0; }
+pin=$(yq -r '.kustofmt // ""' "$VERSIONS")
+[ -n "$pin" ] || { echo "SKIP  no kustofmt pin in $VERSIONS yet (stage 11 step 1 pins it)"; exit 0; }
+kust=$(yq -r '.kustomize // ""' "$VERSIONS")
+[ -n "$kust" ] || { bad "kustomize pinned in $VERSIONS" "the kustofmt pin has no authority without it"; exit 1; }
+
+install="curl -sL https://github.com/blairforce1/kustofmt/releases/download/v$pin/kustofmt_${pin}_linux_amd64.tar.gz | tar xz -C ~/.local/bin kustofmt"
+ver=$(kustofmt -version 2>/dev/null)
+have_v=$(printf '%s\n' "$ver" | awk 'NR == 1 { print $2 }')
+have=$(printf '%s\n' "$ver" | awk '$1 == "kyaml" { print $2 }')
+if [ "$have_v" = "$pin" ] && [ -n "$have" ]; then
+  ok "installed kustofmt ($have_v) is the pin, linking kyaml $have (its own -version line)"
+else
+  bad "installed kustofmt is the pin" "have ${have_v:-none} at $(command -v kustofmt || echo 'no kustofmt on PATH'), want $pin - install: $install"
+  echo; echo "check-kustofmt-kustomize-parity: $pass passed, $fail failed"; exit 1
+fi
+
+compat=$(gh api "$COMPAT" --jq .content 2>/dev/null | base64 -d)
+if [ -z "$compat" ]; then
+  echo "WARN  kustofmt's compatibility.yaml unreachable (offline?) - the pin is unverified, not wrong:"
+  echo "      https://github.com/blairforce1/kustofmt/blob/main/compatibility.yaml"
+  exit 0
+fi
+want=$(k="$kust" yq -r '.releases[] | select(.kustomize[] == env(k)) | .kyaml' <<<"$compat")
+row=$(k="$kust" yq -r '.releases[] | select(.kustomize[] == env(k)) | .kustofmt' <<<"$compat")
+if [ -z "$want" ]; then
+  bad "compatibility.yaml has a row for kustomize $kust" \
+    "kustofmt's watcher has not recorded that release yet (it runs daily) - the pin is unverifiable until it does; re-run tomorrow"
+else
+  ok "kustomize $kust ships kyaml $want (compatibility.yaml's row, proven by kustofmt's CI)"
+  if [ "$have" = "$want" ]; then
+    ok "the formatter and the renderer share one emitter (kyaml $have)"
+  else
+    bad "the formatter and the renderer share one emitter" \
+      "kustofmt $pin links $have, kustomize $kust ships $want - pin kustofmt $row in $VERSIONS (the row for $kust)"
+  fi
+fi
+
+echo
+echo "check-kustofmt-kustomize-parity: $pass passed, $fail failed"
+[ "$fail" -eq 0 ]

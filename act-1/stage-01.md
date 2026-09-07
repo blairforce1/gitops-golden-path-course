@@ -228,7 +228,11 @@ kubectl -n ggp wait --for=condition=Ready pod --all --timeout=180s
 
 - [ ] Blob round-trip works (`PUT` then `GET` returns the payload).
 - [ ] You can articulate, from experience just now, three specific failures: no actor record, no reviewable diff, no recoverable desired state.
-- [ ] `kubectl -n ggp get events`: note that even these expire (~1h). Try to answer "who scaled app to 3?" You can't.
+- [ ] Even the events expire (about an hour). Try to answer "who scaled app to 3?" from them. You can't:
+
+```sh
+kubectl -n ggp get events
+```
 
 **Measured outcome:** working system; zero durable operational record.
 

@@ -57,7 +57,7 @@ kustomize build apps/overlays/dev | yq -N '.kind + "/" + .metadata.name'
 #   Deployment/azurite
 ```
 
-What `kustomize create` did: the base's `kustomization.yaml` pulls the five resource files together into one buildable unit, and each overlay's simply points at the base (browse the generated files; they're minimal: apiVersion, kind, a resource list). What the build output shows: every resource assembled and emitted **in the correct dependency order**, the Namespace before the things that live inside it, regardless of the alphabetical file order that tripped stage 01. That ordering dance is already gone, and no one had to remember anything. The unfiltered build is worth scrolling once: kustomize is not magic. It applies the declarative overlay on top of the base and emits ordinary, complete YAML. And notice what you rendered: **one overlay of the two that now exist**. `apps/overlays/dev` and `apps/overlays/prod` are two instances of the same base, each with its own render; swap `dev` for `prod` in the build command and today's output is identical, because nothing distinguishes them yet - the rest of this stage and the overlays' `patches/` are what pull them apart. That render, per overlay, is the real artifact; every later gate, diff and deploy in the course operates on it.
+What `kustomize create` did: the base's `kustomization.yaml` pulls the five resource files together into one buildable unit, and each overlay's simply points at the base (browse the generated files; they're minimal: apiVersion, kind, a resource list). What the build output shows: every resource assembled and emitted **in the correct dependency order**, the Namespace before the things that live inside it, regardless of the alphabetical file order that tripped stage 01. That ordering dance is already gone, and no one had to remember anything. The unfiltered build is worth scrolling once: kustomize is not magic. It applies the declarative overlay on top of the base and emits ordinary, complete YAML. And notice what you rendered: **one overlay of the two that now exist**. `apps/overlays/dev` and `apps/overlays/prod` are two instances of the same base, each with its own render; swap `dev` for `prod` in the build command and today's output is identical, because nothing distinguishes them yet - the rest of this stage and the overlays' `patches/` are what pull them apart. That render, per overlay, is the real artifact; every later gate, diff and deploy in the course operates on it. The shape you just built, base plus an overlay per class plus a binding that picks one, is the course's first pattern, and stage 13 builds it again for the platform in a tree of its own; [the patterns page](../appendices/patterns.md#1-base-and-overlays-twice) says why the two trees stay apart.
 
 > Scaffolding by CLI, per the tool-writes-the-file rule, [rule 3.5](../rules.md#35-the-tool-writes-the-file). The same rule governs the next steps: **`kustomize edit` wherever the emitted file is as good as a hand-written one; whole-file writes where the CLI can't express the content**, meaning comments, and readable inline patches. Each exception states its reason where it occurs. CLI behaviour and emitted style are those of the pinned kustomize, stage 00's prerequisites.
 
@@ -368,8 +368,9 @@ PASS  standard labels on every Deployment
 PASS  dev JSON6902 patch applied (managed-by annotation)
 PASS  generated ConfigMap carries content hash (app-config-<hash>)
 PASS  configMapKeyRef rewritten to the hashed name (cross-folder wiring works)
+PASS  layout: one resource per file, <name>.<kind>.yaml, typed folders (layout-gate)
 
-checkpoint-02: 10 passed, 0 failed
+checkpoint-02: 11 passed, 0 failed
 ```
 
 > First run pulls the kubeconform image, one-time noise. Podman-shim users: `sudo touch /etc/containers/nodocker` silences the "Emulate Docker CLI" banner.
@@ -384,7 +385,7 @@ kubectl -n ggp wait --for=condition=Ready pod --all --timeout=180s
 kubectl -n ggp get pods
 ```
 
-> Not `kubectl apply -k`: kubectl embeds its *own*, usually stale, kustomize. The render rule ([rule 4.1](../rules.md#41-the-render-rule-one-master-per-tool-and-kubectl-never-renders)) pins rendering to the standalone `kustomize`, so the thing you apply is the thing your checkpoints asserted on. kubectl is the API client, never the renderer.
+> Not `kubectl apply -k`: kubectl embeds its *own*, usually stale, kustomize. The render rule ([rule 4.1](../rules.md#41-the-render-rule-one-authority-per-tool-and-kubectl-never-renders)) pins rendering to the standalone `kustomize`, so the thing you apply is the thing your checkpoints asserted on. kubectl is the API client, never the renderer.
 
 Two things to notice. First, no namespace-first dance: `kustomize build` emits namespaces before the things inside them, stage 01's ordering knowledge moved into tooling. Second, a caveat wearing a foreshadow: **`kubectl apply` never prunes.** Had the overlay stopped rendering something stage 01 created, applying over the top would have silently orphaned it on the cluster. Flux's `prune: true` closes exactly that gap in stage 03.
 
@@ -517,7 +518,11 @@ curl -s localhost:8090/notes/hello; echo                            # world
 
 kill $PF   # stop the port-forward when done
 ```
-- [ ] `git diff` of this stage shows intent as reviewable text.
+- [ ] The stage's diff shows intent as reviewable text:
+
+```sh
+git diff stage-01..HEAD --stat
+```
 - [ ] The restructure is committed and pushed, and its subject parses as `type(scope): description`. `git log -1 --format=%s` reads back three fields, not a sentence.
 
 **Measured outcome:** environment difference is now a computable diff:

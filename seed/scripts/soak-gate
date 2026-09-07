@@ -1,0 +1,317 @@
+#!/usr/bin/env bash
+# Has the artifact this promotion moves run on the rung above for as long as soak.yaml
+# says it must?
+#
+# A soak is evidence about the artifact, not the copy (pattern 4): the bytes that ran on
+# dev are the bytes prod receives, so dev's clean window is prod's evidence, and a window
+# has a length. soak.yaml declares that length per artifact kind and target rung; this
+# gate holds every ascent to it and reads the time served from git's own dates (rule
+# 5.8): the first-parent commits that put the candidate on the rung above and kept it
+# there. Nothing here is a clock somebody started.
+#
+# Usage: soak-gate [base-ref] [head-ref]       judge a change (default origin/main HEAD):
+#                                              every promotion pointer the diff moves
+#        soak-gate <kind> <rung> [candidate]   judge one ascent before the change exists;
+#                                              kind image|chart|kubernetes, rung dev|prod;
+#                                              the candidate defaults to what the rung
+#                                              above serves (charts: every patch there)
+#        soak-gate --declared                  print the declared durations
+#        soak-gate --due                       what the ladder owes: every ascent where a rung
+#                                              is ahead of the one below, judged against min
+#                                              and max (check-ladder-due runs this from check)
+#        soak-gate --due --items               the same, and a work item for every DUE or
+#                                              overdue ascent that has none: a sub-issue of
+#                                              the standing item, closed by the promotion PR
+#        --record <file>   a commit message or PR body to read a Soak-waived: trailer
+#                          from (a change is otherwise read for it on its own commits)
+#
+# Waiver: a `Soak-waived: <reason>` trailer passes a failing verdict, loudly, the way
+# freeze-gate's override does: a soak nobody can waive is one people bypass by turning
+# the check off, which is worse than a waiver with a reason in the record.
+#
+# Two numbers per ascent. min is what the artifact owes before it climbs, judged at the
+# PR. max is what the rung below owes: how long it may run what the rung above has left
+# behind, since past that point the rung above tests against a platform the rung below
+# does not run and its evidence is no longer about it. max is judged by --due, where
+# there is no PR to refuse: below min a line reads SOAKING, between the two DUE, past max
+# FAIL, and FROZEN when an active entry in freezes.yaml covers the rung's paths.
+#
+# Pointers, per kind: the file on a rung, the value, and the rung above.
+#   kubernetes  clusters/versions.yaml                          .classes.<rung>.minor         platform > dev > prod
+#   image       apps/overlays/<rung>/kustomization.yaml         .images[0].digest // newTag   dev > prod
+#   chart       infrastructure/overlays/<rung>/patches/<file>   .spec.chart.spec.version      platform > dev > prod
+# Entry rungs (an image at dev, a chart or a minor at platform) are pins, not promotions,
+# and owe no soak: that is where the artifact starts earning one.
+set -uo pipefail
+
+cd "$(dirname "$0")/.."
+SOAK="${SOAK_FILE:-soak.yaml}"
+RECORD=""; MODE=""; ITEMS=0; args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --record)   RECORD="${2:?--record <file>}"; shift 2 ;;
+    --declared) MODE=declared; shift ;;
+    --due)      MODE=due; shift ;;
+    --items)    ITEMS=1; shift ;;
+    -*)         echo "usage: soak-gate [--record <file>] [base-ref] [head-ref] | <kind> <rung> [candidate] | --declared | --due"; exit 2 ;;
+    *)          args+=("$1"); shift ;;
+  esac
+done
+pass=0; fail=0
+ok()  { echo "PASS  $1"; pass=$((pass+1)); }
+bad() { echo "FAIL  $1${2:+  [$2]}"; fail=$((fail+1)); }
+
+[ -f "$SOAK" ] || { echo "OK  no $SOAK in this repo - no soak is declared, nothing to judge (stage 16 declares it)"; exit 0; }
+command -v yq >/dev/null || { echo "FAIL  yq is required to read $SOAK  [see stage 00]"; exit 2; }
+
+secs()  { case "$1" in *d) echo $(( ${1%d} * 86400 ));; *h) echo $(( ${1%h} * 3600 ));; *m) echo $(( ${1%m} * 60 ));; *s) echo "${1%s}";; *) echo "$1";; esac; }
+human() { local s=$1; if [ "$s" -ge 86400 ]; then echo "$((s/86400))d $(( (s%86400)/3600 ))h"; elif [ "$s" -ge 3600 ]; then echo "$((s/3600))h $(( (s%3600)/60 ))m"; else echo "$((s/60))m"; fi; }
+above() { case "$1" in prod) echo dev;; dev) echo platform;; esac; }
+pointer_file() {  # kind rung [patch]
+  case "$1" in
+    kubernetes) echo clusters/versions.yaml;;
+    image)      echo "apps/overlays/$2/kustomization.yaml";;
+    chart)      echo "infrastructure/overlays/$2/patches/$3";;
+  esac
+}
+pointer_expr() {  # kind rung
+  case "$1" in
+    kubernetes) echo ".classes.$2.minor";;
+    image)      echo '.images[0].digest // .images[0].newTag';;
+    chart)      echo '.spec.chart.spec.version';;
+  esac
+}
+value_at() { git show "$1:$2" 2>/dev/null | yq -r "$3" - 2>/dev/null; }   # ref file expr
+# soak.yaml accepts a bare duration (the min alone) or a map with min and max.
+soak_min() { local v; v=$(yq -r ".$1.$2 // \"\"" "$SOAK" 2>/dev/null); case "$v" in "") echo "";; *"min:"*) yq -r ".$1.$2.min // \"\"" "$SOAK";; *) echo "$v";; esac; }
+soak_max() { local v; v=$(yq -r ".$1.$2 // \"\"" "$SOAK" 2>/dev/null); case "$v" in *"max:"*) yq -r ".$1.$2.max // \"\"" "$SOAK";; *) echo "";; esac; }
+
+# Since when has the file's value been WANT without a break, on REF's first-parent line:
+# the oldest commit of the unbroken run that ends at REF. Empty when REF's own value differs.
+served_since() {  # ref file expr want
+  local ref=$1 file=$2 expr=$3 want=$4 since="" sha val
+  for sha in $(git log --first-parent --format=%H "$ref" -- "$file" 2>/dev/null); do
+    val=$(value_at "$sha" "$file" "$expr")
+    [ "$val" = "$want" ] || break
+    since=$sha
+  done
+  [ -n "$since" ] && git log -1 --format=%ct "$since"
+}
+
+judge() {  # kind rung candidate ref [patch]
+  local kind=$1 rung=$2 want=$3 ref=$4 patch=${5:-}
+  local up req file expr have since served
+  up=$(above "$rung")
+  req=$(soak_min "$kind" "$rung")
+  if [ -z "$req" ] || [ "$req" = null ]; then
+    ok "$kind -> $rung: no soak declared for this ascent in $SOAK"; return
+  fi
+  file=$(pointer_file "$kind" "$up" "$patch"); expr=$(pointer_expr "$kind" "$up")
+  have=$(value_at "$ref" "$file" "$expr")
+  if [ -z "$have" ] || [ "$have" = null ]; then
+    bad "$kind -> $rung: $up has no pointer at $file" "a promotion moves what the rung above serves, and nothing is there to have soaked"; return
+  fi
+  if [ "$have" != "$want" ]; then
+    bad "$kind -> $rung: $up is not serving $want (it serves $have)" "a promotion moves what the rung above serves; a rung skipped is not a soak"; return
+  fi
+  since=$(served_since "$ref" "$file" "$expr" "$want")
+  served=$(( $(date +%s) - since ))
+  if [ "$served" -ge "$(secs "$req")" ]; then
+    ok "$kind -> $rung: $want has run on $up since $(date -u -d "@$since" +%F) ($(human "$served") of the $req required)"
+  else
+    bad "$kind -> $rung: $want has run on $up for $(human "$served") of the $req required" "on $up since $(date -u -d "@$since" '+%F %H:%M UTC'); promotable from $(date -u -d "@$(( since + $(secs "$req") ))" '+%F %H:%M UTC'), or a Soak-waived: <reason> trailer"
+  fi
+}
+
+if [ "$MODE" = declared ]; then
+  echo "== soak-gate --declared: $SOAK, the soak per ascent =="
+  for kind in kubernetes chart image; do
+    for rung in dev prod; do
+      mn=$(soak_min "$kind" "$rung"); mx=$(soak_max "$kind" "$rung")
+      [ -n "$mn" ] && printf '  %-11s -> %-5s min %-4s max %-4s  (served on %s)\n' "$kind" "$rung" "$mn" "${mx:--}" "$(above "$rung")"
+    done
+  done
+  exit 0
+fi
+
+# An active freeze covering the rung's paths excuses an overdue ascent: the calendar is
+# the customer's commitment, and the report says so instead of going red.
+frozen_by() {  # path-prefix -> the freeze id covering it today, or nothing
+  [ -f freezes.yaml ] || return 0
+  local today; today=$(date -u +%F)
+  yq -r '.freezes[] | [.id, .from, .to, (.scope // [] | join(" "))] | @tsv' freezes.yaml 2>/dev/null \
+  | while IFS=$'\t' read -r id from to scope; do
+      [ "$from" \> "$today" ] && continue; [ "$to" \< "$today" ] && continue
+      for s in $scope; do case "$1" in "$s"*) echo "$id"; return;; esac; done
+    done
+}
+rung_paths() {  # kind rung -> the path prefix a freeze would name
+  case "$1" in kubernetes) echo "clusters/$2/";; image) echo "apps/overlays/$2/";; chart) echo "infrastructure/overlays/$2/";; esac
+}
+due() {  # kind rung candidate ref [patch] [name]: one line for an ascent where the rung above is ahead
+  local kind=$1 rung=$2 want=$3 ref=$4 patch=${5:-} name=${6:-$1}
+  local up mn mx file expr since served fz held
+  up=$(above "$rung")
+  mn=$(soak_min "$kind" "$rung"); mx=$(soak_max "$kind" "$rung")
+  [ -n "$mn" ] || return 0
+  file=$(pointer_file "$kind" "$up" "$patch"); expr=$(pointer_expr "$kind" "$up")
+  since=$(served_since "$ref" "$file" "$expr" "$want"); [ -n "$since" ] || return 0
+  served=$(( $(date +%s) - since )); lines=$((lines+1))
+  if [ "$served" -ge "$(secs "$mn")" ]; then
+    held=$(held_by "$(item_title "$name" "$want" "$rung")")
+    if [ -n "$held" ]; then
+      echo "HELD     $name -> $rung: $want on $up since $(date -u -d "@$since" +%F); not promoting, item $held"
+      return 0
+    fi
+  fi
+  if [ "$served" -lt "$(secs "$mn")" ]; then
+    echo "SOAKING  $name -> $rung: $want on $up since $(date -u -d "@$since" +%F); promotable from $(date -u -d "@$(( since + $(secs "$mn") ))" '+%F %H:%M UTC')"
+  elif [ -z "$mx" ] || [ "$mx" = null ] || [ "$served" -lt "$(secs "$mx")" ]; then
+    open_item "$kind" "$rung" "$want" "$name"
+    echo "DUE      $name -> $rung: $want on $up since $(date -u -d "@$since" +%F); promotable since $(date -u -d "@$(( since + $(secs "$mn") ))" +%F)${mx:+; overdue from $(date -u -d "@$(( since + $(secs "$mx") ))" +%F)}"
+  else
+    fz=$(frozen_by "$(rung_paths "$kind" "$rung")")
+    if [ -n "$fz" ]; then
+      echo "FROZEN   $name -> $rung: $want on $up since $(date -u -d "@$since" +%F), past its $mx; freeze '$fz' covers $(rung_paths "$kind" "$rung") today"
+    else
+      open_item "$kind" "$rung" "$want" "$name"
+      bad "$name -> $rung: $want overdue since $(date -u -d "@$(( since + $(secs "$mx") ))" +%F)" "on $up since $(date -u -d "@$since" +%F), max $mx: $rung runs what $up left behind, so $up's evidence is not about $rung; promote it, or declare the freeze that excuses it"
+    fi
+  fi
+}
+# One work item per ascent that is due, idempotent by title, a sub-issue of the standing
+# item that owns the artifact class (found by its title, since numbers differ per repo),
+# and closed by the promotion PR's Closes: trailer. Only with --items: the report itself
+# writes nothing, as a gate should not (rule 5.9); the flag is the explicit write, the way
+# derive-ladder --write is.
+item_title() { echo "Promote $1 $2 to $3"; }   # name candidate rung
+# A closed item with the ascent's title is a decision not to promote this candidate: the
+# report reads it as HELD, and --items never opens another for it. Offline, or with no
+# gh, there is no answer and the line stays what the dates say.
+held_by() {  # title -> "#n: <the closing comment's first line>", or nothing
+  command -v gh >/dev/null 2>&1 || return 0
+  local n why
+  n=$(gh issue list --state closed --search "in:title \"$1\"" --json number,title --jq ".[] | select(.title == \"$1\") | .number" 2>/dev/null | head -1)
+  [ -n "$n" ] || return 0
+  why=$(gh issue view "$n" --json comments --jq '.comments[-1].body // ""' 2>/dev/null | head -1)
+  echo "#$n${why:+: $why}"
+}
+open_item() {  # kind rung candidate name
+  [ "$ITEMS" -eq 1 ] || return 0
+  local kind=$1 rung=$2 want=$3 name=$4 title parent n id pid
+  title=$(item_title "$name" "$want" "$rung")
+  n=$(gh issue list --state open --search "in:title \"$title\"" --json number,title --jq ".[] | select(.title == \"$title\") | .number" 2>/dev/null | head -1)
+  [ -z "$n" ] || { echo "ITEM     #$n open for: $title"; return 0; }
+  case "$kind" in image) parent="Image automation";; *) parent="Platform currency";; esac
+  pid=$(gh issue list --state open --search "in:title \"$parent\"" --json number,title --jq ".[] | select(.title | startswith(\"$parent\")) | .number" 2>/dev/null | head -1)
+  gh label create promotion --description "an ascent the ladder owes, opened by check-ladder-due" --color 0E8A16 --force >/dev/null 2>&1 || true
+  n=$(gh issue create --title "$title" --label promotion --body "$(printf '%s\n' \
+    "## What" "$name $want has served its soak on $(above "$rung") (soak.yaml); $rung still runs what $(above "$rung") left behind." "" \
+    "## How" "One promotion PR, the rung's pointer to $want, citing this item with Closes: #<this>. soak-gate judges the soak on the push and on the PR." "" \
+    "## Why an item" "Every change cites a work item (rule 2.5); the standing item ${pid:+#$pid }records arrivals, this one records the ascent and closes with it." "" \
+    "Opened by check-ladder-due${pid:+; parent #$pid}.")" 2>/dev/null | grep -oE '[0-9]+$')
+  [ -n "$n" ] || { echo "ITEM     could not open an item for: $title (gh auth?)"; return 0; }
+  if [ -n "$pid" ]; then
+    id=$(gh api "repos/{owner}/{repo}/issues/$n" --jq .id 2>/dev/null)
+    [ -n "$id" ] && gh api -X POST "repos/{owner}/{repo}/issues/$pid/sub_issues" -F sub_issue_id="$id" >/dev/null 2>&1 || true
+  fi
+  echo "ITEM     #$n opened for: $title${pid:+ (sub-issue of #$pid)}"
+}
+if [ "$MODE" = due ]; then
+  echo "== check-ladder-due: what the ladder owes, against $SOAK =="
+  lines=0
+  for rung in dev prod; do
+    up=$(above "$rung")
+    a=$(value_at HEAD clusters/versions.yaml ".classes.$up.minor"); b=$(value_at HEAD clusters/versions.yaml ".classes.$rung.minor")
+    [ -n "$a" ] && [ "$a" != null ] && [ "$a" != "$b" ] && due kubernetes "$rung" "$a" HEAD "" kubernetes
+    for f in infrastructure/overlays/$up/patches/*.yaml; do
+      [ -f "$f" ] || continue
+      a=$(value_at HEAD "$f" '.spec.chart.spec.version'); b=$(value_at HEAD "infrastructure/overlays/$rung/patches/${f##*/}" '.spec.chart.spec.version')
+      n=${f##*/}; n=${n%%.*}
+      [ -n "$a" ] && [ "$a" != null ] && [ "$a" != "$b" ] && due chart "$rung" "$a" HEAD "${f##*/}" "chart $n"
+    done
+  done
+  a=$(value_at HEAD apps/overlays/dev/kustomization.yaml '.images[0].digest // .images[0].newTag'); b=$(value_at HEAD apps/overlays/prod/kustomization.yaml '.images[0].digest // .images[0].newTag')
+  [ -n "$a" ] && [ "$a" != null ] && [ "$a" != "$b" ] && due image prod "$a" HEAD "" image
+  [ "$lines" -gt 0 ] || echo "OK  nothing is due: every rung serves what the rung above serves"
+  echo
+  [ "$fail" -eq 0 ] && { echo "check-ladder-due: $lines ascent(s) in progress, 0 overdue"; exit 0; }
+  echo "check-ladder-due: $fail overdue"; exit 1
+fi
+
+waiver=""
+case "${args[0]:-}" in
+  kubernetes|image|chart)
+    kind=${args[0]}; rung=${args[1]:?usage: soak-gate <kind> <dev|prod> [candidate]}
+    case "$rung" in dev|prod) ;; *) echo "usage: soak-gate <kind> <dev|prod> [candidate]"; exit 2;; esac
+    echo "== soak-gate: $kind -> $rung, the soak per ascent from git's dates =="
+    up=$(above "$rung")
+    if [ "$kind" = chart ]; then
+      for f in infrastructure/overlays/$up/patches/*.yaml; do
+        [ -f "$f" ] || { bad "chart -> $rung: no patches under infrastructure/overlays/$up/" "the chart pins live there from stage 13"; break; }
+        judge chart "$rung" "$(value_at HEAD "$f" "$(pointer_expr chart "$up")")" HEAD "${f##*/}"
+      done
+    else
+      want=${args[2]:-$(value_at HEAD "$(pointer_file "$kind" "$up")" "$(pointer_expr "$kind" "$up")")}
+      judge "$kind" "$rung" "$want" HEAD
+    fi
+    [ -n "$RECORD" ] && waiver=$(sed -n 's/^Soak-waived: *//p' "$RECORD" | head -1)
+    ;;
+  *)
+    base=${args[0]:-origin/main}; head=${args[1]:-HEAD}
+    echo "== soak-gate: $base..$head, every promotion pointer the change moves =="
+    # A revert moves a pointer back and a break drill moves it somewhere deliberately wrong;
+    # neither is an ascent, and the rung above serves neither. The subject says which it is:
+    # the record's first line, else the commits' own.
+    if [ -n "$RECORD" ]; then subjects=$(head -1 "$RECORD"); else subjects=$(git log --format=%s "$base..$head" 2>/dev/null); fi
+    if printf '%s\n' "$subjects" | grep -qiE '^(revert|break)\b'; then
+      echo "OK  a revert or a break is not an ascent - no soak is owed (revert-gate and the drill judge those)"
+      echo; echo "soak-gate: 0 PASS"; exit 0
+    fi
+    judged=0
+    for f in $(git diff --name-only "$base" "$head" 2>/dev/null); do
+      case "$f" in
+        clusters/versions.yaml)
+          for rung in dev prod; do
+            b=$(value_at "$base" "$f" ".classes.$rung.minor"); h=$(value_at "$head" "$f" ".classes.$rung.minor")
+            if [ "$b" != "$h" ] && [ -n "$h" ] && [ "$h" != null ]; then judge kubernetes "$rung" "$h" "$head"; judged=1; fi
+          done
+          b=$(value_at "$base" "$f" '.classes.platform.minor'); h=$(value_at "$head" "$f" '.classes.platform.minor')
+          [ "$b" != "$h" ] && echo "NOTE  kubernetes -> platform: the entry rung, a pin; no soak is owed" ;;
+        apps/overlays/*/kustomization.yaml)
+          rung=${f#apps/overlays/}; rung=${rung%%/*}
+          b=$(value_at "$base" "$f" '.images[0].digest // .images[0].newTag'); h=$(value_at "$head" "$f" '.images[0].digest // .images[0].newTag')
+          [ "$b" = "$h" ] && continue
+          case "$rung" in
+            prod) judge image prod "$h" "$head"; judged=1 ;;
+            dev)  echo "NOTE  image -> dev: the entry rung, a pin; no soak is owed" ;;
+          esac ;;
+        infrastructure/overlays/*/patches/*.yaml)
+          rung=${f#infrastructure/overlays/}; rung=${rung%%/*}; patch=${f##*/}
+          b=$(value_at "$base" "$f" '.spec.chart.spec.version'); h=$(value_at "$head" "$f" '.spec.chart.spec.version')
+          if [ "$b" = "$h" ] || [ -z "$h" ] || [ "$h" = null ]; then continue; fi
+          case "$rung" in
+            platform) echo "NOTE  chart -> platform: the entry rung, a pin; no soak is owed" ;;
+            dev|prod) judge chart "$rung" "$h" "$head" "$patch"; judged=1 ;;
+          esac ;;
+      esac
+    done
+    [ "$judged" -eq 1 ] || echo "OK  no promotion pointer moves in this change - nothing to soak"
+    # The trailer is read anywhere in the record, not only in git's last paragraph: the
+    # bodies this repo writes put Roll-forward: a paragraph above Refs:, and a waiver
+    # sits beside it.
+    if [ -n "$RECORD" ]; then waiver=$(sed -n 's/^Soak-waived: *//p' "$RECORD" | head -1)
+    else waiver=$(git log --format=%B "$base..$head" 2>/dev/null | sed -n 's/^Soak-waived: *//p' | head -1); fi
+    ;;
+esac
+
+echo
+if [ "$fail" -eq 0 ]; then echo "soak-gate: $pass PASS"; exit 0; fi
+if [ -n "$waiver" ]; then
+  echo "WAIVED  a Soak-waived: trailer is on the record: $waiver"
+  echo "        allowed, recorded, and in the log forever. If this was an incident, that is the"
+  echo "        system working; if it is the third one this month, the soak is fiction."
+  echo "soak-gate: $fail FAIL waived, $pass PASS"; exit 0
+fi
+echo "soak-gate: $fail FAIL, $pass PASS"
+exit 1

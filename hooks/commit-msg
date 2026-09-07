@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Conventional Commits on the course's own history, and no em dash anywhere.
+set -uo pipefail
+subject=$(sed -n '1p' "$1")
+case "$subject" in 'Merge '*|'Revert '*|'fixup! '*|'squash! '*) exit 0;; esac
+fail=0
+if ! printf '%s\n' "$subject" | grep -qE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9][a-z0-9., -]*\))?!?: [^ ].*$'; then
+  echo "commit-msg: subject is not type(scope): description  ->  $subject"; fail=1
+fi
+[ "${#subject}" -le 100 ] || { echo "commit-msg: subject is ${#subject} chars (max 100)"; fail=1; }
+if grep -q $'\xe2\x80\x94' "$1"; then echo "commit-msg: em dash in the message - restructure, never substitute"; fail=1; fi
+exit "$fail"

@@ -128,7 +128,7 @@ fewer than instinct suggests:
 | Marked `!` | Why a revert doesn't work |
 |---|---|
 | A version pin whose rung is **rebuilt** rather than upgraded in place ([stage 16](../act-4/stage-16.md)) | Reverting the pin does not un-rebuild the cluster; the old one is gone |
-| A secret rotated **after** its old key was retired ([stage 17](../act-5/stage-17.md)) | The prior ciphertext is no longer decryptable by anything |
+| A secret rotated **after** its old key was retired ([stage 17](../act-5/stage-17.md)) | A revert restores the old value's ciphertext, which the fleet decrypts and applies: the value the retired key exposed, and for a real secret one revoked at its provider |
 | Any change whose old value the **provider revoked** ([stage 20](../act-5/stage-20.md)) | The revert reconciles green onto a dead credential: the failure mode with no error message |
 
 Not marked: anything git can put back. A pin move, a replica count, a binding, a policy rule, a
@@ -172,13 +172,14 @@ Closes: #142
 Refs: #98, #131
 ```
 
-The three trailers this repo uses:
+The trailers this repo uses:
 
 | Trailer | Means |
 |---|---|
 | `Closes:` | what this change finishes: GitHub auto-closes on merge to the default branch |
 | `Refs:` | what it touches without finishing: one of the two is mandatory on every PR ([rule 2.5](../rules.md#25-every-change-has-a-work-item-the-trailer-is-the-reason)) |
 | `Roll-forward:` | **required whenever the subject carries `!`** ([rule 9](#the-nine-deciding-rules)): what to do *instead* of reverting |
+| `Soak-waived:` | a promotion that cannot wait the soak `soak.yaml` declares: the reason, and who agreed; `soak-gate` passes it loudly ([stage 16](../act-4/stage-16.md)) |
 
 `Closes:` for what this change finishes (GitHub auto-closes on merge to the default branch),
 `Refs:` for what it touches. Multi-value is native: trailers are a list, so nothing has to be

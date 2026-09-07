@@ -348,80 +348,9 @@ The last answer is the sharpest in the course so far. Read the history: the brea
 
 ## AI enhancement
 
-**How.** One skill per drill, each stopping where the human's line is: the merge, the tag, the closing of the item. The scripts give the verdicts; the skills assemble and write. Run them from the config repo in Claude Code, in the order below: the three that read this checkpoint's evidence first, the rebuild last, because a rebuild erases what the clusters hold (events, `status.history`) and leaves only the durable artifacts.
+**How.** One skill, `run-drill`, running drill 1 again as one script and stopping where the human's line is: the tag and the closing of the item. The other drills are not repeated: the skills they use have their second outings inside the stages (`promote` at stages 07 and 09, `fleet-triage` at 04 and 09) and in Act VI's audit drill (`audit-evidence`). Run it from the config repo in Claude Code, on `main` with a clean tree.
 
-**Drill 2, the promotion.** `promote` gathers the evidence for one pin move (the rung below's applied revision, the green context on the source commit, the freeze calendar, the render before and after) and opens the PR with a body that is the deployment record, every gate's output quoted. The dev pin is not a promotion and stays yours. Mint a fresh release, the same lines as drill 2:
-
-```sh
-source ./env.sh
-cd "$APP_DIR" && git pull
-TAG="v0.1.1-run$(date +%Y%m%d%H%M%S)"
-git tag "$TAG" && git push origin "$TAG"
-echo -n "waiting for the registry to have ${TAG#v} (multi-arch build, ~2-3m) "
-until docker manifest inspect $APP_IMAGE:${TAG#v} >/dev/null 2>&1; do printf .; sleep 10; done; echo
-cd -
-```
-
-Pin dev by PR:
-
-```sh
-source ./env.sh
-(cd apps/overlays/dev && kustomize edit set image $APP_IMAGE:${TAG#v})
-git add apps/overlays/dev
-./scripts/pr-open pin/10/dev-${TAG#v} "pin(app-dev): app ${TAG#v}" <<EOF
-## What is moving
-Dev's app pin to ${TAG#v}.
-
-## Why now
-Act II checkpoint, AI enhancement: a release for the promote skill to move.
-
-## Evidence
-The image exists on GHCR (polled above).
-
-## If it is wrong
-Revert this merge; prod has not moved.
-
-Refs: #10
-EOF
-```
-
-Read it; when the diff is what the body claims, merge, then wait for dev's green on the merge. `rung-time` is that wait, and the number comes free:
-
-```sh
-gh pr merge --merge --delete-branch \
-&& git switch main \
-&& git pull
-./scripts/rung-time "pin(app-dev): app ${TAG#v}" kustomization/app-dev/dev-01 kind-ggp-dev-01 app-dev
-```
-
-Now the skill, with the stamp and the target rung. The version is never an argument; it is what the rung below serves:
-
-```
-/promote app app-prod
-```
-
-Merge on the diff, then time the rung it moved:
-
-```sh
-gh pr merge --merge --delete-branch \
-&& git switch main \
-&& git pull
-./scripts/rung-time "promote(app-prod): app ${TAG#v}" kustomization/app-prod/prod-01 kind-ggp-prod-01 app-prod
-```
-
-**Drill 3, the break, read back.** `fleet-triage` answers "which rung, which layer, since when" from an identifier: it splits the context into the binding file and the kube context, walks the ladder top-down on that cluster, and reads the two facts, `lastAppliedRevision` and the status sequence. Prod is already restored, so ask about the break commit and expect what you found by hand: the health layer, the reason string verbatim (`timeout waiting for: [Deployment/ggp/app status: 'InProgress']`), that prod never applied it, and the revert as the fix. On the 2.8.8 pin it must read the absent context as the red; if it hunts for a `failure` status, or proposes a `kubectl` fix, that is a defect in the skill:
-
-```
-/fleet-triage kustomization/app-prod/prod-01, for the break(app-prod): absent image commit
-```
-
-**Drill 4, the dossier.** `audit-evidence` runs the queries you ran in drill 4 and writes them up in one fixed shape: the question verbatim, the controls exercised (control → mechanism → evidence → where retrieved), a timeline with one source per line, findings, and the gaps it could not close. Keep it: it writes `docs/audits/<date>-<slug>.md` and opens the PR with `pr-open`, citing this checkpoint's work item. Merge it before you close the item, because `issue-gate` requires the cited issue open at merge:
-
-```
-/audit-evidence between the break and the restore, what was prod actually running, who fixed it, and how do you know dev was unaffected? The break(app-prod): absent image commit and its revert.
-```
-
-**Drill 1, the rebuild, last.** `run-drill` runs `scripts/act-2-drill`, the fleet-from-nothing rebuild as one script: three clusters down and up, `cluster-sync` each, the three root keys paid, the checkpoints, and the number from artifacts. It runs the script detached and reads its log, since nine minutes outlives a tool call, and writes the pack on this checkpoint's work item, `#10`: the number with its source, the refusals, the findings. Be on `main` with a clean tree; the script refuses otherwise. Bare, it prints what it would destroy and refuses:
+**Drill 1, the rebuild.** `run-drill` runs `scripts/act-2-drill`, the fleet-from-nothing rebuild as one script: three clusters down and up, `cluster-sync` each, the three root keys paid, the checkpoints, and the number from artifacts. It runs the script detached and reads its log, since nine minutes outlives a tool call, and writes the pack on this checkpoint's work item, `#10`: the number with its source, the refusals, the findings. Be on `main` with a clean tree; the script refuses otherwise. Bare, it prints what it would destroy and refuses:
 
 ```
 /run-drill rebuild act-2
@@ -433,27 +362,11 @@ Then, having read the blast radius, the run. Nine minutes on the measured fleet:
 /run-drill rebuild act-2 --yes
 ```
 
-**Why.** The four drills are the platform's operating loop in miniature, and each has a step where judgment is the work: which of sixteen greens is stale, whether a red is the cascade, what the dossier must say. The scripts give the verdicts; the skills assemble and write.
+**Why.** A drill's value is the evidence pack, and the pack is where hand-run drills go thin: the number gets typed from memory. The script gives the verdicts and the number; the skill sequences the run and writes the pack.
 
 **Where.** After the checkpoint has been run by hand once, and before its work item is closed.
 
-**Verify.** One check per skill, against artifacts. The promotion: `rung-time` by hand gives the rung its number (the skill does not measure, it promotes), and the body quotes every gate verbatim, `SKIP` included, with the rendered diff as one line:
-
-```sh
-./scripts/rung-time "promote(app-prod): app ${TAG#v}" kustomization/app-prod/prod-01 kind-ggp-prod-01 app-prod
-sha=$(./scripts/commit-by-subject "promote(app-prod): app ${TAG#v}")
-gh pr list --state merged --search "$sha" --json body --jq '.[0].body'   # the PR record, by its merge commit
-```
-
-The triage: its layer and reason string against your drill 3 record; the cluster's own copy went with the rebuild, which is why the rebuild ran last. The dossier: landed by PR citing the work item, and no timeline row without a source:
-
-```sh
-git log --first-parent -1 --format='%h  %s%n%(trailers:key=Refs)' -- docs/audits
-sed -n '/^## Timeline/,/^## Findings/p' docs/audits/*.md | grep '^| 20' | awk -F'|' '$4 ~ /^ *$/ { print "no source: " $0 }'
-# → (nothing: every row has a source)
-```
-
-The pack: the number on the work item agrees with the table below:
+**Verify.** What the rebuild leaves. The pack: the number on the work item agrees with the table below:
 
 ```sh
 gh issue view 10 --comments | grep -n 'fleet-from-nothing'

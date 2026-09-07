@@ -1,4 +1,4 @@
-# 0012. Follow the master, at the pace Kubernetes sets
+# 0012. Follow the authority, at the pace Kubernetes sets
 
 - **Status:** accepted
 - **Date:** 2026-08-11
@@ -11,11 +11,11 @@ OSS Flux typically runs a minor ahead of the release bundled in AKS's `microsoft
 
 ## Decision
 
-Versions are followed, never chased. Every pin tracks its master's current release ([0010](0010-one-master-per-tool-kubectl-never-renders.md)); the local Flux mirrors the AKS extension's bundled release. The fleet's Kubernetes version climbs a ladder: platform first, then dev, then prod, each class at most one minor behind the next, recorded in `clusters/versions.yaml` and climbed one rung per change. The same order carries chart bumps and controller upgrades. `check-flux-aks-parity` scrapes the extension release notes and compares (FAIL on minor drift with the pin command, WARN if the scrape breaks); it runs at stage starts and on a CI schedule.
+Versions are followed, never chased. Every pin tracks its authority's current release ([0010](0010-one-authority-per-tool-kubectl-never-renders.md)); the local Flux mirrors the AKS extension's bundled release. The fleet's Kubernetes version climbs a ladder: platform first, then dev, then prod, each class at most one minor behind the next, recorded in `clusters/versions.yaml` and climbed one rung per change. The same order carries chart bumps and controller upgrades. `check-flux-aks-parity` scrapes the extension release notes and compares (FAIL on minor drift with the pin command, WARN if the scrape breaks); it runs at stage starts and on a CI schedule.
 
 ## Considered options
 
-- **Latest OSS Flux.** Runs ahead of the fleet's eventual master; the absorption diff would be a downgrade.
+- **Latest OSS Flux.** Runs ahead of the fleet's eventual authority; the absorption diff would be a downgrade.
 - **One Kubernetes version fleet-wide.** Not how a real fleet looks; the ladder is what lets a minor soak somewhere nobody misses before it reaches prod.
 - **Pin and forget.** Drift is silent; the scheduled parity check exists so that drift surfaces without anyone remembering to look.
 

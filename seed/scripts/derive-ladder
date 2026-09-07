@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Derive the Kubernetes version ladder from its master instead of guessing it.
-# The master is AKS's support window (rule 4.3): the three GA minors AKS runs
+# Derive the Kubernetes version ladder from its authority instead of guessing it.
+# The authority is AKS's support window (rule 4.3): the three GA minors AKS runs
 # today become platform=next, dev=current, prod=stable, and the newest
 # kindest/node patch image for each minor comes from the registry. Scrapes the
 # AKS release calendar; a scrape is fragile by nature, so a failed parse names
@@ -100,8 +100,8 @@ fi
 
 cat >> "$VERSIONS" <<EOF
 # The Kubernetes version ladder - a class fact, pinned in git (rule 5.4).
-# platform tests NEXT, dev is CURRENT, prod is STABLE; upgrades enter at
-# platform, soak, then walk down the ladder one PR per rung (stage 16 climbs it).
+# platform tests NEXT, dev is CURRENT, prod is STABLE; the ladder climbs bottom up,
+# prod then dev on the rung above's soak, platform when AKS offers a minor (stage 16).
 # The three-minor spread matches AKS support (N..N-2); Act VIII holds the fleet to it.
 # kubectl's +/-1 skew across a three-minor fleet means only the middle rung
 # reaches all three - so kubectl pins to the DEV class, and a dev upgrade PR

@@ -49,6 +49,12 @@ ref=$(prod | yq -N 'select(.kind=="Deployment" and .metadata.name=="app") | .spe
 [ "$ref" = "$cfg" ] && ok "configMapKeyRef rewritten to the hashed name (cross-folder wiring works)" \
                     || bad "configMapKeyRef rewritten to the hashed name" "ref=$ref cfg=$cfg"
 
+if "$(dirname "$0")/layout-gate" >/dev/null 2>&1; then
+  ok "layout: one resource per file, <name>.<kind>.yaml, typed folders (layout-gate)"
+else
+  bad "layout: one resource per file, <name>.<kind>.yaml, typed folders" "./scripts/layout-gate names the files"
+fi
+
 echo
 echo "checkpoint-02: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

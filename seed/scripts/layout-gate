@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Layout gate: rules 3.1 and 3.2 as a verdict. One resource per file; the file is
+# <metadata.name>.<kind>.yaml, lowercase, dots in the name written as dashes (patches
+# <target>.<kind>.patch.yaml, replacements <target>.<kind>.replacement.yaml); and it
+# sits in a typed folder: resources/, patches/, replacements/ or secrets/.
+#
+# Judged over the resource trees only: apps/ infrastructure/ clusters/ policy/ tenants/.
+# Not judged: kustomization.yaml (tool-mandated), flux-system/ (tool-managed, rewritten
+# on every re-bootstrap), clusters/versions.yaml (a pin file, not a resource), and
+# anything under config/, which holds generator inputs beside their kustomization
+# (rule 3.2). A JSON6902 patch is an op list with no kind inside, so for it and for a
+# replacement spec the filename alone names the target; a strategic-merge patch and every
+# resource must agree with their own kind and metadata.name.
+#
+# Needs yq and nothing else, so checkpoint-02 runs it from stage 02; style-gate runs it
+# first from stage 11, which puts it in the pre-commit hook and CI without another line.
+# Usage: layout-gate [files...]   (no args = every tracked YAML under the trees)
+set -uo pipefail
+
+in_trees() { case "$1" in apps/*|infrastructure/*|clusters/*|policy/*|tenants/*) return 0;; esac; return 1; }
+exempt()   { case "$1" in kustomization.yaml|*/kustomization.yaml|*/flux-system/*|clusters/versions.yaml|*/config/*) return 0;; esac; return 1; }
+
+files=()
+if [ $# -gt 0 ]; then
+  for f in "$@"; do
+    f=${f#./}
+    case "$f" in *.yaml|*.yml) ;; *) continue;; esac
+    in_trees "$f" && ! exempt "$f" && [ -f "$f" ] && files+=("$f")
+  done
+else
+  while IFS= read -r f; do exempt "$f" || files+=("$f"); done \
+    < <(git ls-files -- apps infrastructure clusters policy tenants 2>/dev/null | grep -E '\.ya?ml$')
+fi
+[ ${#files[@]} -gt 0 ] || { echo "PASS  layout-gate: no resource YAML to judge"; exit 0; }
+
+misplaced=(); misnamed=(); unreadable=(); multidoc=(); mismatch=()
+for f in "${files[@]}"; do
+  base=${f##*/}; dir=${f%/*}; folder=${dir##*/}
+  case "$folder" in
+    resources|secrets) shape='^[a-z0-9-]+\.[a-z0-9]+\.yaml$';               want='<name>.<kind>.yaml' ;;
+    patches)           shape='^[a-z0-9-]+\.[a-z0-9]+\.patch\.yaml$';        want='<target>.<kind>.patch.yaml' ;;
+    replacements)      shape='^[a-z0-9-]+\.[a-z0-9]+\.replacement\.yaml$';  want='<target>.<kind>.replacement.yaml' ;;
+    *) misplaced+=("$f"); continue ;;
+  esac
+  printf '%s' "$base" | grep -Eq "$shape" || { misnamed+=("$f  (want $want)"); continue; }
+  ndocs=$(yq 'documentIndex' "$f" 2>/dev/null | sort -u | wc -l)
+  [ "$ndocs" -gt 0 ] || { unreadable+=("$f"); continue; }
+  [ "$ndocs" -eq 1 ] || { multidoc+=("$f  ($ndocs documents)"); continue; }
+  [ "$folder" = replacements ] && continue
+  [ "$(yq 'type' "$f" 2>/dev/null)" = '!!map' ] || continue
+  kind=$(yq -r '.kind // ""' "$f"); name=$(yq -r '.metadata.name // ""' "$f")
+  nseg=${base%%.*}; rest=${base#*.}; kseg=${rest%%.*}; tail=${rest#*.}
+  lk=$(printf '%s' "$kind" | tr '[:upper:]' '[:lower:]'); ln=$(printf '%s' "$name" | tr '.' '-')
+  if [ -z "$kind" ] || [ -z "$name" ]; then
+    mismatch+=("$f  (no kind or metadata.name inside)")
+  elif [ "$lk" != "$kseg" ] || [ "$ln" != "$nseg" ]; then
+    mismatch+=("$f  (inside: $kind $name, so $ln.$lk.$tail)")
+  fi
+done
+
+pass=0; fail=0
+ok()  { echo "PASS  $1"; pass=$((pass+1)); }
+bad() { echo "FAIL  $1  [$2]"; fail=$((fail+1)); shift 2; printf '      %s\n' "$@"; }
+
+echo "== layout-gate: ${#files[@]} file(s) =="
+if [ ${#misplaced[@]} -eq 0 ]; then ok "every resource file sits in a typed folder (resources/ patches/ replacements/ secrets/)"
+else bad "every resource file sits in a typed folder" "rule 3.2: move them" "${misplaced[@]}"; fi
+if [ ${#misnamed[@]} -eq 0 ]; then ok "filenames are <name>.<kind>.yaml, lowercase (patches .patch.yaml, replacements .replacement.yaml)"
+else bad "filenames are <name>.<kind>.yaml" "rule 3.1: rename them" "${misnamed[@]}"; fi
+if [ ${#unreadable[@]} -eq 0 ]; then ok "every resource file parses as YAML"
+else bad "every resource file parses as YAML" "yq could not read these" "${unreadable[@]}"; fi
+if [ ${#multidoc[@]} -eq 0 ]; then ok "one resource per file"
+else bad "one resource per file" "rule 3.1: split them" "${multidoc[@]}"; fi
+if [ ${#mismatch[@]} -eq 0 ]; then ok "each filename matches the kind and metadata.name inside it"
+else bad "each filename matches the kind and metadata.name inside it" "rule 3.1: the file says otherwise" "${mismatch[@]}"; fi
+
+echo
+echo "layout-gate: $pass passed, $fail failed"
+[ "$fail" -eq 0 ]

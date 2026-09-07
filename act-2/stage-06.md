@@ -18,7 +18,7 @@ Two tools, one job each. **sops** (Secrets OPerationS; Mozilla originally, now a
 
 Composed, they work like this: for each file, sops generates a random *data key*, encrypts the values with it (AES256-GCM), then wraps that data key to every age recipient listed for the file's path. The wrapped copies ride in the `sops:` block. That mechanism is why everything later in this stage works the way it does: anyone can encrypt (wrapping needs only *public* keys), adding or removing a reader means re-wrapping the data key (`sops updatekeys`), and `encrypted_regex` can leave `kind:`/`metadata:` plaintext because encryption is per-value, not per-file.
 
-sops and age install natively (they hold key material, not container-filter candidates), and they install **pinned**: kustomize-controller decrypts what your sops encrypts, using the sops and age libraries embedded in its own go.mod, so those are the masters, per the render rule. Cross-version sops history is real (the 3.8 MAC-computation change broke older decryptors), and upstream sops runs ahead of the controller's library, so an unpinned "latest" writes ciphertext ahead of the fleet's decryptor. Don't guess either version: the gate derives both from the controller's go.mod (and it's part of `./scripts/check` from now on):
+sops and age install natively (they hold key material, not container-filter candidates), and they install **pinned**: kustomize-controller decrypts what your sops encrypts, using the sops and age libraries embedded in its own go.mod, so those are the authorities, per the render rule. Cross-version sops history is real (the 3.8 MAC-computation change broke older decryptors), and upstream sops runs ahead of the controller's library, so an unpinned "latest" writes ciphertext ahead of the fleet's decryptor. Don't guess either version: the gate derives both from the controller's go.mod (and it's part of `./scripts/check` from now on):
 
 ```sh
 ./scripts/check-sops-flux-parity    # the "embeds" line names the derived sops and age versions
@@ -39,12 +39,12 @@ curl -sSL "https://github.com/FiloSottile/age/releases/download/v${AGE_V}/age-v$
   | tar -xz -C ~/.local/bin --strip-components=1 age/age age/age-keygen
 ```
 
-And now the repo starts *recording* pins. **`clusters/versions.yaml` is born here**: the render rule's ledger, one line per tool whose master is a dependency graph rather than "latest". kustomize and helm have been installed at derived versions since stage 00, but nothing in git said so; sops and age join as they arrive. The block below derives every value from the binaries the gates just proved correct, so the file records truth instead of repeating a guess:
+And now the repo starts *recording* pins. **`clusters/versions.yaml` is born here**: the render rule's ledger, one line per tool whose authority is a dependency graph rather than "latest". kustomize and helm have been installed at derived versions since stage 00, but nothing in git said so; sops and age join as they arrive. The block below derives every value from the binaries the gates just proved correct, so the file records truth instead of repeating a guess:
 
 ```sh
 mkdir -p clusters
 cat > clusters/versions.yaml <<EOF
-# Render-tool pins (rule 4.1): one master per tool, derived, never guessed.
+# Render-tool pins (rule 4.1): one authority per tool, derived, never guessed.
 # kustomize: kustomize-controller's EFFECTIVE library (a go.mod replace wins
 #   over the require line) - local renders must equal cluster renders.
 # helm: helm-controller's embedded helm library IS the CLI version, digit for digit.

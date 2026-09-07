@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Does the course still point at what it says it points at?
-# Course-side tooling (not seeded into config repos). Eight checks over the docs
+# Course-side tooling (not seeded into config repos). Fourteen checks over the docs
 # themselves: every relative link resolves, every stage file has a row in the
 # README's act tables (and every row a file), every stage doc's nav and Next lines
 # name real neighbours, counted claims about another document match it, every
@@ -9,6 +9,11 @@
 # every stage-number reference - in any of its surface forms - names a stage the
 # roster has, with stage-link text agreeing with the file it points at, and every
 # sh-fence comment stays inside the ~110-column render budget (using-the-course §3).
+# Then the stage-shape checks (9-14), each a defect a reader met by pasting: a written
+# file that is not an sh-fence heredoc, a step that is prose ("repeat step 2"), a Stop &
+# measure bullet naming a command with no block to run it, a branch referenced that
+# nothing creates, a merge block repeating the watch the block before it ended on, and
+# a rule cited without its number.
 # Usage: tools/docs-gate                       run the checks (from anywhere in the repo)
 #        tools/docs-gate --stage-refs [NN]     print every stage-number reference (the
 #                                              renumber worklist; over-inclusive when
@@ -204,6 +209,111 @@ if [ -z "$badcomment" ]; then
 else
   fail "comments past the render budget - move above the command, or wrap (using-the-course §3):"
   printf '%s\n' "$badcomment" | sed 's/^/        /'
+fi
+
+# The shape checks below judge verified stages as FAIL and unverified ones as WARN: an
+# unverified stage gets its shape at pre-flight, when its expected output can be read
+# off a live tree, and until then its debt is listed, not blocking. STATUS.md's table
+# says which is which.
+verified=$(awk -F'|' '/^\| [0-9][0-9] \| [0-9]{4}-/ { gsub(/ /, "", $2); print "stage-" $2 }' STATUS.md)
+shape() {  # $1 = finding lines (file:… first), $2 = PASS text, $3 = FAIL/WARN text
+  local hard="" soft="" line f
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    f=${line%%:*}; f=${f%% *}; f=$(basename "$f" .md)
+    if printf '%s\n' "$verified" | grep -qx "$f"; then hard="$hard$line"$'\n'; else soft="$soft$line"$'\n'; fi
+  done <<< "$1"
+  if [ -z "$hard" ] && [ -z "$soft" ]; then pass "$2"; return; fi
+  if [ -n "$hard" ]; then fail "$3"; printf '%s' "$hard" | sed 's/^/        /'; fi
+  if [ -n "$soft" ]; then
+    printf 'WARN  %s (unverified stages, due at their pre-flight):\n' "$3"
+    printf '%s' "$soft" | sed 's/^/        /'
+  fi
+}
+
+# --- 9. a written file is a heredoc in an sh fence --------------------------------
+# "Create `path`:" over a bare yaml/rego/json fence is a file the reader builds by hand,
+# and pasted into a shell it runs as commands (stage 12, 2026-09-04). Every written file
+# is `cat > path <<'EOF'` inside an sh fence, pasted like any other block.
+badwrite=$(git ls-files 'act-*/*.md' | while IFS= read -r f; do
+  awk -v F="$f" '
+    /^(Create|Write|Save|Add|Put|Author) .*`[^`]+\.(ya?ml|rego|json|toml|ini|sh|md|txt|env)`/ { lead = FNR; next }
+    lead && /^```[a-z]+$/ && FNR - lead <= 3 {
+      if ($0 != "```sh") print F ":" FNR "  " $0 " fence under a written-file lead-in (line " lead ")"
+      lead = 0; next }
+    /^```/ { lead = 0 }
+  ' "$f"
+done)
+shape "$badwrite" "every written file is a cat > heredoc in an sh fence" \
+  "files the reader would have to build by hand - make each a cat > heredoc in an sh fence"
+
+# --- 10. every step is a paste block ------------------------------------------------
+# "Repeat step 2's dance with a base change" is a step the reader has to reconstruct;
+# every "run this" is a fenced block at that point, adapted (using-the-course §3).
+badprose=$(git ls-files 'act-*/*.md' | xargs grep -nEi \
+  "repeat step [0-9]|same dance|as in step [0-9]|as you did (in|at) step|the same (way|as) (in |at )?step" 2>/dev/null || true)
+shape "$(printf '%s\n' "$badprose" | cut -c1-140)" "no step asks the reader to repeat an earlier one from memory" \
+  "steps described by reference to another - write the block out, adapted"
+
+# --- 11. a Stop & measure bullet that names a command has a block under it --------
+# A bullet saying "`./scripts/style-gate` green on the whole tree" is a check with no
+# way to run it and nothing to compare against; the shape is a checkbox, its sh block,
+# and the expected output (stage 09's, since 2026-09-01).
+badmeasure=$(git ls-files 'act-*/*.md' | while IFS= read -r f; do
+  awk -v F="$f" '
+    /^## Stop & measure/ { sec = 1; next }
+    sec && /^## / { if (pending != "") print pending; pending = ""; sec = 0 }
+    !sec { next }
+    /^- / { if (pending != "") print pending; pending = ""
+            if ($0 ~ /`(\.\/)?scripts\/[a-z0-9-]+|`(gh|kubectl|flux|git|kustomize|helm|curl|sops|docker|dotnet) /)
+              pending = F ":" FNR "  a command named in a bullet with no block to run it"
+            next }
+    /^```sh/ { pending = "" }
+    END { if (pending != "") print pending }
+  ' "$f"
+done)
+shape "$badmeasure" "every Stop & measure bullet that names a command has a block to run it" \
+  "Stop & measure bullets to turn into a checkbox, a block and its expected output"
+
+# --- 12. every branch a stage refers to is one the stage creates -----------------
+# `gh pr close rendered-diff-demo` for a branch called pin/16/rendered-diff-demo fails
+# at the one moment the reader is cleaning up. Only <type>/<issue>/<slug> forms are
+# judged; flux-image-updates and main are not branches a stage creates by hand.
+badbranch=$(git ls-files 'act-*/*.md' | while IFS= read -r f; do
+  created=$(grep -oE '(pr-open|git switch -c|git checkout -b|--push-branch=|--checkout-branch=) ?"?[A-Za-z0-9_/.-]+' "$f" \
+    | awk '{ print $NF }' | tr -d '"' | sed -E 's/^--[a-z-]+=//' | sort -u)
+  grep -oE '(gh pr (close|view|edit|checks|merge|reopen|ready|diff|comment) |--head "?|git push (-u )?origin )[a-z]+/[0-9]+/[a-z0-9-]+' "$f" \
+    | awk '{ print $NF }' | tr -d '"' | sort -u | while IFS= read -r b; do
+      printf '%s\n' "$created" | grep -qx "$b" || echo "$f  refers to branch $b, which nothing in the file creates"
+    done
+done)
+shape "$badbranch" "every branch a stage refers to is one it creates" \
+  "branches referred to but never created in the same stage"
+
+# --- 13. a merge block does not repeat the watch the previous block ended on ------
+baddup=$(git ls-files 'act-*/*.md' | while IFS= read -r f; do
+  awk -v F="$f" '
+    /^```sh/ { insh = 1; first = 1; last = ""; next }
+    /^```/ && insh { insh = 0; lastwatch = (last ~ /^gh pr checks --watch/) ? 1 : 0; next }
+    insh && $0 !~ /^[[:space:]]*(#|$)/ {
+      if (first && lastwatch && $0 ~ /^gh pr checks --watch/) print F ":" FNR "  repeats the gh pr checks --watch the previous block ended on"
+      first = 0; last = $0 }
+  ' "$f"
+done)
+shape "$baddup" "no merge block repeats the watch the block before it ended on" \
+  "a block ends with gh pr checks --watch and the next begins with it - keep the one in the merge block"
+
+# --- 14. every rule cited has its number ---------------------------------------------
+# The commit-convention appendix numbers its own nine rules; "rule 9" is fine on a line that
+# says so (links the appendix or its anchor, or says "commit convention"). Bare, it reads as
+# rules.md and misleads.
+badrule=$(git ls-files '*.md' | grep -v '^seed/' | xargs grep -nE '\brule [0-9]+([^.0-9]|$)' 2>/dev/null \
+  | grep -vE 'commit-convention|commit convention|nine-deciding-rules' || true)
+if [ -z "$badrule" ]; then
+  pass "every rule is cited as N.N"
+else
+  fail "rules cited by a bare number - the rules are N.N (stage 11 once said rule 9 for 2.1):"
+  printf '%s\n' "$badrule" | cut -c1-140 | sed 's/^/        /'
 fi
 
 echo

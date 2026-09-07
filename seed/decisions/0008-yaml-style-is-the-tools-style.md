@@ -23,7 +23,7 @@ All YAML follows kustomize's emitted style. Flow style is banned in authored YAM
 ## Consequences
 
 - Easier: the house style is a byte comparison against what kyaml emits, not a description; `.yamllint.yaml` at the root is the convention as one file read by terminal, hooks, CI and editors.
-- Harder: sops-encrypted files are lint-exempt for a hard reason (the MAC covers plaintext structure), and tool-owned trees (`flux-system/`) are excluded by the caller, because kustofmt has no ignore config by design.
+- Harder: sops-encrypted files are lint-exempt for a hard reason (the MAC covers plaintext structure), and tool-owned trees (`flux-system/`) are dropped by the gate from any list it is handed, because kustofmt has no ignore config by design (`layout-gate` holds the same exemption).
 - Harder: two CLI traps have to be taught: `flux create kustomization --health-check-timeout` versus the bare `--timeout`, and `kustomize create` refusing to overwrite.
 - Follow-up: kustofmt is its own public repository and is consumed like any pinned filter ([0011](0011-filters-from-images-operators-installed.md)).
 

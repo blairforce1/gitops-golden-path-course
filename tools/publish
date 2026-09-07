@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-PUBLISHED_ACTS="1 2 3" # space-separated act numbers published in full
+PUBLISHED_ACTS="1 2 3 4"
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 dest="${1:-$root/../gitops-golden-path-course-public}"

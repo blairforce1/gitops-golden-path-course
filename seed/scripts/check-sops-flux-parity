@@ -38,7 +38,7 @@ want_sops=$(echo "$gomod" | grep 'github.com/getsops/sops/v3 =>' | grep -o 'v[0-
 want_age=$(echo "$gomod" | grep 'filippo.io/age =>' | grep -o 'v[0-9.]*$' | head -1)
 [ -n "$want_age" ] || want_age=$(echo "$gomod" | grep 'filippo.io/age v' | grep -o 'v[0-9.]*' | tail -1)
 if [ -n "$want_sops" ] && [ -n "$want_age" ]; then
-  ok "controller $kc embeds sops $want_sops and age $want_age (its go.mod is the master)"
+  ok "controller $kc embeds sops $want_sops and age $want_age (its go.mod is the authority)"
 else
   bad "embedded sops/age discoverable" "go.mod parse failed (sops: ${want_sops:-?}, age: ${want_age:-?})"; exit 1
 fi

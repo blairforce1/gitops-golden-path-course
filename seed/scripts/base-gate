@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Base gate: base is sacred, as a verdict. A change under a base tree (apps/base/,
+# infrastructure/base/) has no rung to gate it on, so it is allowed only when nothing any
+# cluster receives changes (rule 5.4, third corollary; the patterns page, "Base is sacred").
+# Two layers, because the two failure modes have different evidence:
+#   1. the FACT: every root some cluster consumes on EITHER side of the change, and
+#      that exists on both, renders byte-identical on both sides. Either side, because
+#      a re-pointed stamp reconciles the new commit under its old path before the
+#      binding that moves it lands: a root whose last binding leaves in this very
+#      change is live for one more reconcile, and if base lost a value in the same
+#      commit that reconcile renders base without it. A root consumed on neither side
+#      is nobody's, and is not judged.
+#   2. the CLAIM: with --subject, the PR title's type must say what the render says.
+#      refactor, style, docs, chore and a git revert are the types of a change that
+#      renders empty; feat, fix, pin, promote and the rest are the author saying the
+#      render moved, which on base means a promotion skipping the ladder.
+# A change that touches no base tree is not this gate's business: OK, exit 0.
+# Usage: base-gate [--subject "<pr title>"] [base-ref] [head-ref]   defaults: origin/main HEAD
+set -uo pipefail
+
+SUBJECT=''
+if [ "${1:-}" = "--subject" ]; then SUBJECT="${2:?--subject \"<pr title>\"}"; shift 2; fi
+BASE="${1:-origin/main}"
+HEAD_REF="${2:-HEAD}"
+
+files=$(git diff --name-only "$BASE" "$HEAD_REF")
+touched=$(printf '%s\n' "$files" | grep -E '^[a-z0-9-]+/base/' || true)
+[ -n "$touched" ] || { echo "OK  no base tree touched - the ladder gates this change"; exit 0; }
+
+pass=0; fail=0
+ok()  { echo "PASS  $1"; pass=$((pass+1)); }
+bad() { echo "FAIL  $1  [$2]"; fail=$((fail+1)); }
+
+echo "== base-gate: $(printf '%s\n' "$touched" | wc -l) file(s) under a base tree =="
+printf '%s\n' "$touched" | sed 's/^/      /'
+
+# --- 2. the claim ------------------------------------------------------------------
+if [ -n "$SUBJECT" ]; then
+  type=$(printf '%s' "$SUBJECT" | sed -E 's/^([a-z]+)[(:!].*/\1/')
+  case "$SUBJECT" in
+    'Revert "'*) ok "typed as a change that renders empty (a git revert)";;
+    *) case "$type" in
+         refactor|style|docs|chore) ok "typed as a change that renders empty ($type)";;
+         *) bad "typed as a change that renders empty" "it is '$type': on base that is a promotion skipping the ladder - enter it as an overlay patch on one rung, or type it refactor and make the render empty";;
+       esac;;
+  esac
+fi
+
+# --- 1. the fact -------------------------------------------------------------------
+command -v kustomize >/dev/null || { bad "kustomize on PATH" "the render rule: install it from clusters/versions.yaml"; echo; echo "base-gate: $pass passed, $fail failed"; exit 1; }
+
+# The roots some cluster consumes on either side: every path a Flux Kustomization under
+# clusters/ points at, on the base side or the head side. The cluster roots themselves
+# (clusters/…) are bindings, which carry no base tree and change whenever a stamp is
+# re-aimed; that is path-gate's row and stage 12's comment, not this gate's question, so
+# they are left out.
+roots=$( { git grep -h -E '^ +path: \./' "$BASE" -- clusters/ 2>/dev/null; git grep -h -E '^ +path: \./' "$HEAD_REF" -- clusters/ 2>/dev/null; } \
+         | sed -E 's|^ +path: \./||; s|/$||' | grep -v '^clusters/' | sort -u)
+[ -n "$roots" ] || { bad "roots to judge" "no Flux Kustomization under clusters/ names a path on $HEAD_REF"; echo; echo "base-gate: $pass passed, $fail failed"; exit 1; }
+
+tmp=$(mktemp -d)
+cleanup() { git worktree remove --force "$tmp/base" 2>/dev/null; git worktree remove --force "$tmp/head" 2>/dev/null; rm -rf "$tmp"; }
+trap cleanup EXIT
+git worktree add -q --detach "$tmp/base" "$BASE" || { bad "checkout of $BASE" "git fetch?"; exit 1; }
+git worktree add -q --detach "$tmp/head" "$HEAD_REF" || { bad "checkout of $HEAD_REF" "git fetch?"; exit 1; }
+
+judged=0; skipped=''; changed=''
+for d in $roots; do
+  # a root on one side only is additions or deletions by definition; stage 12's comment shows them
+  if [ ! -f "$tmp/base/$d/kustomization.yaml" ] || [ ! -f "$tmp/head/$d/kustomization.yaml" ]; then
+    skipped="$skipped $d"; continue
+  fi
+  judged=$((judged+1))
+  for side in base head; do
+    (cd "$tmp/$side" && kustomize build "$d") > "$tmp/$side.yaml" 2>"$tmp/$side.err" \
+      || echo "BUILD FAILED: $(cat "$tmp/$side.err")" > "$tmp/$side.yaml"
+  done
+  if ! diff -q "$tmp/base.yaml" "$tmp/head.yaml" >/dev/null; then
+    n=$(diff "$tmp/base.yaml" "$tmp/head.yaml" | grep -c '^[<>]')
+    changed="$changed$d ($n lines)"$'\n'
+  fi
+done
+
+if [ -z "$changed" ]; then
+  ok "every consumed root renders byte-identical ($judged judged${skipped:+; one side only, not judged:$skipped})"
+else
+  bad "every consumed root renders byte-identical" "these changed - a base change that renders is a promotion skipping the ladder"
+  printf '%s' "$changed" | sed 's/^/      /'
+fi
+
+echo
+echo "base-gate: $pass passed, $fail failed"
+[ "$fail" -eq 0 ]

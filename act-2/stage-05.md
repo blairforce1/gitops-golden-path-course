@@ -39,7 +39,7 @@ until ./scripts/checkpoint-03 >/dev/null 2>&1; do printf .; sleep 10; done; echo
 Act-opening toolchain gate (new since Act I: the fleet act leans harder on local renders matching cluster renders):
 
 ```sh
-# every tool against its master: flux<->AKS, kustomize & helm<->the
+# every tool against its authority: flux<->AKS, kustomize & helm<->the
 # controllers' embedded libraries, kubectl<->the dev rung
 ./scripts/check
 ```
@@ -93,6 +93,10 @@ spec:
         type: ClusterIP # hostPort does the exposure; no LoadBalancer to pretend with
     nodeSelector:
       ingress-ready: "true"
+    updateStrategy:
+      rollingUpdate:
+        maxSurge: 0 # a host port cannot surge: replace the pod, then start the new one
+        maxUnavailable: 1
 EOF
 
 (cd infrastructure/traefik && kustomize create --autodetect --recursive)
@@ -106,6 +110,8 @@ One hard-won caution about the `values:` block: **values paths are the chart's A
 helm repo add traefik https://traefik.github.io/charts
 helm show values traefik/traefik --version 41.2.0 | less
 ```
+
+And one value that is there for a day you have not met yet. The chart's default rollout is a surge: start the new pod, then stop the old. A pod holding host ports 80 and 443 leaves no free ports on a one-node cluster, so the surge pod can never schedule and the first chart upgrade times out with `FailedScheduling: didn't have free ports`. `updateStrategy` inverts it, stop then start, which is the only rollout that works with host ports on a node. The production shape is a DaemonSet, one pod per node, rolled node by node; on kind, replacement is the honest version of the same thing.
 
 ### 3. Bind it to the cluster, and tell the Alert about it
 
