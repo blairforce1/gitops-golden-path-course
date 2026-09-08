@@ -307,7 +307,7 @@ shape "$baddup" "no merge block repeats the watch the block before it ended on" 
 # The commit-convention appendix numbers its own nine rules; "rule 9" is fine on a line that
 # says so (links the appendix or its anchor, or says "commit convention"). Bare, it reads as
 # rules.md and misleads.
-badrule=$(git ls-files '*.md' | grep -v '^seed/' | xargs grep -nE '\brule [0-9]+([^.0-9]|$)' 2>/dev/null \
+badrule=$(git ls-files '*.md' | grep -v '^seed/' | grep -v '^appendices/scripts.md$' | xargs grep -nE '\brule [0-9]+([^.0-9]|$)' 2>/dev/null \
   | grep -vE 'commit-convention|commit convention|nine-deciding-rules' || true)
 if [ -z "$badrule" ]; then
   pass "every rule is cited as N.N"
@@ -332,6 +332,15 @@ if [ -z "$badhelp" ]; then
 else
   fail "seeded scripts whose header the menu cannot read:"
   printf '%s\n' "$badhelp" | sed 's/^/        /'
+fi
+
+# --- 16. the scripts appendix is the headers, verbatim -------------------------------
+# appendices/scripts.md is generated from the seeded scripts' headers; a hand edit there,
+# or a header changed without regenerating, is a page that lies about --help.
+if tools/gen-scripts-appendix --check >/dev/null 2>&1; then
+  pass "appendices/scripts.md matches the seeded scripts' headers"
+else
+  fail "appendices/scripts.md is stale or hand-edited: run tools/gen-scripts-appendix"
 fi
 
 
