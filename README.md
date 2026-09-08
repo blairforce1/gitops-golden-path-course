@@ -55,7 +55,7 @@ Reference pages that serve several stages, linked where relevant and ignorable o
 
 - [The toolbox](appendices/toolbox.md): stage 00's companion. Every tool the course uses, what it does, how it installs and why.
 - [The scripts](appendices/scripts.md): every seeded script with its usage, options and examples, read off the headers `--help` prints.
-- [The operating skills](appendices/operating-skills.md): the Claude Code skills seeded beside the scripts, what each sequences and where the human's line is.
+- [The operating skills](appendices/operating-skills.md): the Claude Code skills seeded beside the scripts, the runbooks of this platform; what each sequences and where the human's line is.
 - [The commit convention](appendices/commit-convention.md): stage 02 onward. The domain vocabulary, the scope registry, and the nine rules that make it decidable.
 - [The git policy](appendices/git-policy.md): stage 02 onward. Merge-commit-only, why the merge commit is the PR record, and the settings that enforce it.
 - [GitOps patterns](appendices/patterns.md): ways of working several stages use and none names, from base and overlays and the empty diff to one change in flight per rung. A page that grows.
