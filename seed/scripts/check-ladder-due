@@ -1,8 +1,23 @@
 #!/usr/bin/env bash
-# What the ladder owes: every ascent where a rung is ahead of the one below, judged
-# against soak.yaml's min and max from git's own dates. Below min the line reads
-# SOAKING, between the two DUE, past max FAIL, and FROZEN when the freeze calendar
-# covers the rung's paths today. The prefix puts it in ./scripts/check, so every stage
-# start and every checkpoint prints it; a fleet runs it on a schedule (stage 27).
+# What the ladder owes: every ascent in progress, judged against soak.yaml's min and max.
+#
+# Below min the line reads SOAKING, between the two DUE, past max FAIL, and FROZEN when the
+# freeze calendar covers the rung's paths today. The prefix puts it in ./scripts/check, so
+# every stage start and every checkpoint prints it; a fleet runs it on a schedule (stage 27).
 # The logic lives in soak-gate, which judges min at the PR; this is its --due mode.
+#
+# Usage:
+#   check-ladder-due
+#
+# Options:
+#   -h, --help  this text
+#
+# Examples:
+#   # SOAKING, DUE, FAIL past max, FROZEN by the calendar, HELD by a closed item
+#   ./scripts/check-ladder-due
+#   # the same, and a work item per due ascent that has none
+#   ./scripts/soak-gate --due --items
+#
+# See also: soak-gate (the logic); soak.yaml; freezes.yaml; rule 5.7; stage 16
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 exec "$(dirname "$0")/soak-gate" --due

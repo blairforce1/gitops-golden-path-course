@@ -315,6 +315,25 @@ else
   fail "rules cited by a bare number - the rules are N.N (stage 11 once said rule 9 for 2.1):"
   printf '%s\n' "$badrule" | cut -c1-140 | sed 's/^/        /'
 fi
+# --- 15. every seeded script answers --help with its header ---------------------
+# The scripts' headers are their documentation, and scripts/help is the menu that reads
+# them: a script without a Usage and an Example line, or one that does not answer
+# --help, is a hole in the menu the reader meets first.
+badhelp=$(for s in seed/scripts/*; do
+  [ -x "$s" ] || continue
+  out=$(bash "$s" --help 2>&1); rc=$?
+  [ "$rc" -eq 0 ] || { echo "$s  --help exits $rc"; continue; }
+  grep -q '^Usage:' <<<"$out" || echo "$s  no Usage: line in its header"
+  grep -q '^Examples:' <<<"$out" || echo "$s  no Examples: section in its header"
+  [ "$(sed -n 2p "$s" | wc -c)" -le 110 ] || echo "$s  summary line (line 2) longer than 110 characters"
+done)
+if [ -z "$badhelp" ]; then
+  pass "every seeded script answers --help with a summary line, a Usage: and an Examples: section"
+else
+  fail "seeded scripts whose header the menu cannot read:"
+  printf '%s\n' "$badhelp" | sed 's/^/        /'
+fi
+
 
 echo
 if [ "$fails" -eq 0 ]; then

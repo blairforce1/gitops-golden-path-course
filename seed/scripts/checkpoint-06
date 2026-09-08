@@ -1,7 +1,26 @@
 #!/usr/bin/env bash
-# Stage 06 checkpoint: secrets are git citizens - encrypted at rest, class-scoped, decrypted only in-cluster.
+# Stage 06 checkpoint: secrets are git citizens, encrypted at rest and decrypted only in-cluster.
+#
 # Every line is PASS/FAIL + what it means; exits non-zero if anything failed.
+#
+# Usage:
+#   CTX=<kube-context> checkpoint-06
+#
+# Options:
+#   -h, --help  this text
+#
+# Environment:
+#   CTX  the cluster to read (default kind-ggp-local-01)
+#
+# Examples:
+#   # the platform cluster
+#   ./scripts/checkpoint-06
+#   # the dev cluster, after a key rotation
+#   CTX=kind-ggp-dev-01 ./scripts/checkpoint-06
+#
+# See also: stage 06; stage 17; rule 5.10
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 CTX="${CTX:-kind-ggp-local-01}"
 pass=0; fail=0

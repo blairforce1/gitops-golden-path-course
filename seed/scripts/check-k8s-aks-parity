@@ -1,12 +1,26 @@
 #!/usr/bin/env bash
-# Has AKS's support window moved on without the fleet? The ladder's claim -
-# next/current/stable is exactly what a managed cluster may run (stage 07,
-# rule 4.3) - decays silently: kind runs any minor forever, AKS does not, and
-# nothing else fails until Act VIII refuses the version. This gate re-derives
-# the window (scripts/derive-ladder --window) and compares it to the declared
-# ladder. The scrape behind it is fragile by nature, so scrape failures WARN
-# rather than block, same as check-flux-aks-parity.
+# Has AKS's support window moved on without the fleet's version ladder?
+#
+# The ladder's claim - next/current/stable is exactly what a managed cluster may run (stage
+# 07, rule 4.3) - decays silently: kind runs any minor forever, AKS does not, and nothing else
+# fails until Act VIII refuses the version. This gate re-derives the window
+# (scripts/derive-ladder --window) and compares it to the declared ladder. The scrape behind
+# it is fragile by nature, so scrape failures WARN rather than block, same as
+# check-flux-aks-parity.
+#
+# Usage:
+#   check-k8s-aks-parity
+#
+# Options:
+#   -h, --help  this text
+#
+# Examples:
+#   # PASS per class inside the window; FAIL names the rung
+#   ./scripts/check-k8s-aks-parity
+#
+# See also: rule 4.3; derive-ladder; stage 16
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 cd "$(dirname "$0")/.."
 VERSIONS=clusters/versions.yaml

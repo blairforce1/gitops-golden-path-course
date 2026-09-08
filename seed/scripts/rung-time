@@ -1,18 +1,36 @@
 #!/usr/bin/env bash
-# Lead time for one rung of the promotion ladder: from the commit that asked for the
-# change to the commit status reporting it converged - measured honestly.
+# Lead time for one rung: from the commit that asked to the status that says it converged.
 #
 # The honesty is the point. A commit status has two states and Flux derives them from an
 # event's severity: an error posts failure, everything else posts success, with the event's
-# reason as the description. "dependency not ready" is info, so a stamp that reconciles a
-# new revision before its dependencies have posts a green on that commit seconds after the
-# merge, before anything is applied. Read that and a promotion looks 4 seconds long when it
-# took 35. So: wait until the cluster says it applied THIS revision, wait for the rollout,
-# then read the one status that says "reconciliation succeeded".
+# reason as the description. "dependency not ready" is info, so a stamp that reconciles a new
+# revision before its dependencies have posts a green on that commit seconds after the merge,
+# before anything is applied. Read that and a promotion looks 4 seconds long when it took 35.
+# So: wait until the cluster says it applied THIS revision, wait for the rollout, then read
+# the one status that says "reconciliation succeeded".
 #
-# Usage: rung-time <sha-or-subject> <status-context> <kube-context> <stamp>
-#   e.g. rung-time "promote(app-prod): app 0.1.2" kustomization/app-prod/prod-01 kind-ggp-prod-01 app-prod
+# Usage:
+#   rung-time <sha-or-subject> <status-context> <kube-context> <stamp>
+#
+# Arguments:
+#   sha-or-subject  the commit, by sha or exact subject
+#   status-context  the status to read, e.g. kustomization/app-prod/prod-01
+#   kube-context    the cluster, e.g. kind-ggp-prod-01
+#   stamp           the Flux Kustomization, e.g. app-prod
+#
+# Options:
+#   -h, --help  this text
+#
+# Environment:
+#   RUNG_BRANCH  the branch the merge landed on (default main)
+#
+# Examples:
+#   # the prod rung of a promotion
+#   ./scripts/rung-time "promote(app-prod): app 0.1.2" kustomization/app-prod/prod-01 kind-ggp-prod-01 app-prod
+#
+# See also: rule 5.8; every act checkpoint's drill 2; dora
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 SEL="${1:?usage: rung-time <sha-or-subject> <status-context> <kube-context> <stamp>}"
 CTX="${2:?status context, e.g. kustomization/app-prod/prod-01}"

@@ -1,48 +1,63 @@
 #!/usr/bin/env bash
-# Has the artifact this promotion moves run on the rung above for as long as soak.yaml
-# says it must?
+# Has the artifact this promotion moves served its soak on the rung above? And what does the ladder owe?
 #
-# A soak is evidence about the artifact, not the copy (pattern 4): the bytes that ran on
-# dev are the bytes prod receives, so dev's clean window is prod's evidence, and a window
-# has a length. soak.yaml declares that length per artifact kind and target rung; this
-# gate holds every ascent to it and reads the time served from git's own dates (rule
-# 5.8): the first-parent commits that put the candidate on the rung above and kept it
-# there. Nothing here is a clock somebody started.
-#
-# Usage: soak-gate [base-ref] [head-ref]       judge a change (default origin/main HEAD):
-#                                              every promotion pointer the diff moves
-#        soak-gate <kind> <rung> [candidate]   judge one ascent before the change exists;
-#                                              kind image|chart|kubernetes, rung dev|prod;
-#                                              the candidate defaults to what the rung
-#                                              above serves (charts: every patch there)
-#        soak-gate --declared                  print the declared durations
-#        soak-gate --due                       what the ladder owes: every ascent where a rung
-#                                              is ahead of the one below, judged against min
-#                                              and max (check-ladder-due runs this from check)
-#        soak-gate --due --items               the same, and a work item for every DUE or
-#                                              overdue ascent that has none: a sub-issue of
-#                                              the standing item, closed by the promotion PR
-#        --record <file>   a commit message or PR body to read a Soak-waived: trailer
-#                          from (a change is otherwise read for it on its own commits)
+# A soak is evidence about the artifact, not the copy (pattern 4): the bytes that ran on dev
+# are the bytes prod receives, so dev's clean window is prod's evidence, and a window has a
+# length. soak.yaml declares that length per artifact kind and target rung; this gate holds
+# every ascent to it and reads the time served from git's own dates (rule 5.8): the
+# first-parent commits that put the candidate on the rung above and kept it there. Nothing
+# here is a clock somebody started.
 #
 # Waiver: a `Soak-waived: <reason>` trailer passes a failing verdict, loudly, the way
-# freeze-gate's override does: a soak nobody can waive is one people bypass by turning
-# the check off, which is worse than a waiver with a reason in the record.
+# freeze-gate's override does: a soak nobody can waive is one people bypass by turning the
+# check off, which is worse than a waiver with a reason in the record.
 #
-# Two numbers per ascent. min is what the artifact owes before it climbs, judged at the
-# PR. max is what the rung below owes: how long it may run what the rung above has left
-# behind, since past that point the rung above tests against a platform the rung below
-# does not run and its evidence is no longer about it. max is judged by --due, where
-# there is no PR to refuse: below min a line reads SOAKING, between the two DUE, past max
-# FAIL, and FROZEN when an active entry in freezes.yaml covers the rung's paths.
+# Two numbers per ascent. min is what the artifact owes before it climbs, judged at the PR.
+# max is what the rung below owes: how long it may run what the rung above has left behind,
+# since past that point the rung above tests against a platform the rung below does not run
+# and its evidence is no longer about it. max is judged by --due, where there is no PR to
+# refuse: below min a line reads SOAKING, between the two DUE, past max FAIL, and FROZEN when
+# an active entry in freezes.yaml covers the rung's paths.
 #
-# Pointers, per kind: the file on a rung, the value, and the rung above.
-#   kubernetes  clusters/versions.yaml                          .classes.<rung>.minor         platform > dev > prod
-#   image       apps/overlays/<rung>/kustomization.yaml         .images[0].digest // newTag   dev > prod
-#   chart       infrastructure/overlays/<rung>/patches/<file>   .spec.chart.spec.version      platform > dev > prod
-# Entry rungs (an image at dev, a chart or a minor at platform) are pins, not promotions,
-# and owe no soak: that is where the artifact starts earning one.
+# Pointers, per kind: the file on a rung, the value, and the rung above. Entry rungs (an image
+# at dev, a chart or a minor at platform) are pins, not promotions, and owe no soak: that is
+# where the artifact starts earning one.
+#
+# Usage:
+#   soak-gate [--record <file>] [base-ref] [head-ref]
+#   soak-gate <kind> <rung> [candidate]
+#   soak-gate --declared
+#   soak-gate --due [--items]
+#
+# Arguments:
+#   base-ref, head-ref  the change to judge: every promotion pointer the diff moves (default
+#                       origin/main HEAD)
+#   kind                image | chart | kubernetes
+#   rung                dev | prod, the rung being promoted to
+#   candidate           the value being promoted (default: what the rung above serves)
+#
+# Options:
+#   --record <file>  a commit message or PR body to read a Soak-waived: trailer from
+#   --declared       print the declared min and max per ascent
+#   --due            what the ladder owes: SOAKING, DUE, FAIL past max, FROZEN, HELD (this is
+#                    check-ladder-due)
+#   --items          with --due: open a work item per due ascent that has none
+#   -h, --help       this text
+#
+# Environment:
+#   SOAK_FILE  the policy file (default soak.yaml)
+#
+# Examples:
+#   # one ascent, before the PR exists
+#   ./scripts/soak-gate chart dev
+#   # a branch, as the pre-push hook runs it
+#   ./scripts/soak-gate origin/main HEAD
+#   # the report with its work items
+#   ./scripts/soak-gate --due --items
+#
+# See also: soak.yaml; check-ladder-due; slo-gate; rule 5.7; stage 16; decision 0040
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 cd "$(dirname "$0")/.."
 SOAK="${SOAK_FILE:-soak.yaml}"

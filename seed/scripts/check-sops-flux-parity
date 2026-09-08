@@ -1,15 +1,26 @@
 #!/usr/bin/env bash
-# The sops<->flux parity gate: what the sops CLI encrypts, kustomize-controller
-# must decrypt - and the controller decrypts with the sops library EMBEDDED in
-# its go.mod (age likewise, via filippo.io/age). Cross-version sops history is
-# real (the 3.8 MAC-computation change broke older decryptors), so a workstation
-# running "latest" writes ciphertext ahead of the fleet's decryptor. This script
-# walks the graph:
-#   flux pin -> controller version (flux2 manifests) -> controller go.mod ->
-#   getsops/sops/v3 (the decryptor) + filippo.io/age (the key machinery)
-# and compares the pins in clusters/versions.yaml and the installed CLIs,
-# handing out the pinned install if wrong.
+# Do the sops and age CLIs match the libraries kustomize-controller decrypts with?
+#
+# The sops<->flux parity gate: what the sops CLI encrypts, kustomize-controller must decrypt -
+# and the controller decrypts with the sops library EMBEDDED in its go.mod (age likewise, via
+# filippo.io/age). Cross-version sops history is real (the 3.8 MAC-computation change broke
+# older decryptors), so a workstation running "latest" writes ciphertext ahead of the fleet's
+# decryptor. This script walks the graph: and compares the pins in clusters/versions.yaml and
+# the installed CLIs, handing out the pinned install if wrong.
+#
+# Usage:
+#   check-sops-flux-parity
+#
+# Options:
+#   -h, --help  this text
+#
+# Examples:
+#   # PASS/FAIL with the pinned install on FAIL
+#   ./scripts/check-sops-flux-parity
+#
+# See also: rule 4.1; clusters/versions.yaml; stage 06
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 cd "$(dirname "$0")/.."
 VERSIONS=clusters/versions.yaml

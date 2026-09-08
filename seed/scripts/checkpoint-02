@@ -1,8 +1,22 @@
 #!/usr/bin/env bash
 # Stage 02 checkpoint: labeled, self-judging checks over the rendered output.
-# Every line is PASS/FAIL + what it means; exits non-zero if anything failed.
-# CI runs this exact script - the checkpoint and the pipeline can never disagree.
+#
+# Every line is PASS/FAIL + what it means; exits non-zero if anything failed. CI runs this
+# exact script - the checkpoint and the pipeline can never disagree.
+#
+# Usage:
+#   checkpoint-02
+#
+# Options:
+#   -h, --help  this text
+#
+# Examples:
+#   # PASS/FAIL per claim, exit 1 on any FAIL
+#   ./scripts/checkpoint-02
+#
+# See also: stage 02; layout-gate
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 KUBECONFORM_IMG="ghcr.io/yannh/kubeconform:v0.6.7"
 pass=0; fail=0

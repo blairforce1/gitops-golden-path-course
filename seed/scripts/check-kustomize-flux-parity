@@ -1,12 +1,25 @@
 #!/usr/bin/env bash
-# The kustomize<->flux parity gate: local `kustomize build` must render like the
-# cluster does. The cluster renders with kustomize-controller's EFFECTIVE kustomize
-# library - the go.mod replace directive wins over the require line - so version
-# strings are not the truth; the dependency graph is. This script walks it:
-#   flux pin -> controller version (flux2 manifests) -> controller go.mod effective
-#   sigs.k8s.io/kustomize/api -> CLI release (api v0.M.P co-releases as v5.(M-13).P)
-# and compares the installed kustomize, handing out the pinned install if wrong.
+# Does the local kustomize render like kustomize-controller's effective library?
+#
+# The kustomize<->flux parity gate: local `kustomize build` must render like the cluster does.
+# The cluster renders with kustomize-controller's EFFECTIVE kustomize library - the go.mod
+# replace directive wins over the require line - so version strings are not the truth; the
+# dependency graph is. This script walks it: and compares the installed kustomize, handing out
+# the pinned install if wrong.
+#
+# Usage:
+#   check-kustomize-flux-parity
+#
+# Options:
+#   -h, --help  this text
+#
+# Examples:
+#   # PASS/FAIL with the pinned install on FAIL
+#   ./scripts/check-kustomize-flux-parity
+#
+# See also: rule 4.1; clusters/versions.yaml
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 cd "$(dirname "$0")/.."
 VERSIONS=clusters/versions.yaml

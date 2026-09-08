@@ -1,9 +1,23 @@
 #!/usr/bin/env bash
-# Rendered-standards gate: renders every app overlay and tests the result against
-# policy/ with conftest. A pure function over the working tree - no cluster, no
-# credentials - so this SAME file runs locally as a paste block, in CI, and (stage 11)
-# from a pre-push hook: one verdict, three venues. PASS/FAIL contract as always.
+# Rendered-standards gate: every overlay rendered and judged against policy/ with conftest.
+#
+# A pure function over the working tree - no cluster, no credentials - so this SAME file runs
+# locally as a paste block, in CI, and (stage 11) from a pre-push hook: one verdict, three
+# venues. PASS/FAIL contract as always.
+#
+# Usage:
+#   policy-gate
+#
+# Options:
+#   -h, --help  this text
+#
+# Examples:
+#   # the same verdict as CI and the pre-push hook
+#   ./scripts/policy-gate
+#
+# See also: rule 5.6; stage 08; policy/
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 pass=0; fail=0
 ok()  { echo "PASS  $1"; pass=$((pass+1)); }

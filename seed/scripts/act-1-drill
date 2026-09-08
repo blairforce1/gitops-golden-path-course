@@ -1,11 +1,32 @@
 #!/usr/bin/env bash
 # Act I drill runner: re-earns the act checkpoint's four numbers, unattended.
-# DESTRUCTIVE - it deletes and rebuilds the kind cluster, pushes a dated
-# pre-release tag to the app repo (triggering a GHCR publish), and pushes three
-# real PRs here (pin bump, deliberate break, revert) and merges them. Guarded by --yes.
-# Timings are extracted from artifacts (commit stamps, status created_at,
-# condition transitions) - no stopwatch, same rule as act-checkpoint.md.
+#
+# DESTRUCTIVE - it deletes and rebuilds the kind cluster, pushes a dated pre-release tag to
+# the app repo (triggering a GHCR publish), and pushes three real PRs here (pin bump,
+# deliberate break, revert) and merges them. Guarded by --yes. Timings are extracted from
+# artifacts (commit stamps, status created_at, condition transitions) - no stopwatch, same
+# rule as act-checkpoint.md.
+#
+# Usage:
+#   act-1-drill
+#   act-1-drill --yes
+#
+# Options:
+#   --yes       run it; bare, the script prints what it would destroy and exits 1
+#   -h, --help  this text
+#
+# Environment:
+#   APP_DIR  the app repo's checkout (default ../gitops-golden-path-app)
+#
+# Examples:
+#   # read the blast radius, nothing is touched
+#   ./scripts/act-1-drill
+#   # the run; the log is /tmp/act-1-drill.log
+#   ./scripts/act-1-drill --yes
+#
+# See also: the Act I checkpoint page; run-drill (the skill that runs this and writes the pack)
 set -euo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 APP_DIR="${APP_DIR:-../gitops-golden-path-app}"   # relative to this repo's root
 

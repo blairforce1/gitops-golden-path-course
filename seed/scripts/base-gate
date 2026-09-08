@@ -1,22 +1,32 @@
 #!/usr/bin/env bash
+# Base gate: a change under a base tree may not change what any cluster receives.
+#
 # Base gate: base is sacred, as a verdict. A change under a base tree (apps/base/,
 # infrastructure/base/) has no rung to gate it on, so it is allowed only when nothing any
 # cluster receives changes (rule 5.4, third corollary; the patterns page, "Base is sacred").
-# Two layers, because the two failure modes have different evidence:
-#   1. the FACT: every root some cluster consumes on EITHER side of the change, and
-#      that exists on both, renders byte-identical on both sides. Either side, because
-#      a re-pointed stamp reconciles the new commit under its old path before the
-#      binding that moves it lands: a root whose last binding leaves in this very
-#      change is live for one more reconcile, and if base lost a value in the same
-#      commit that reconcile renders base without it. A root consumed on neither side
-#      is nobody's, and is not judged.
-#   2. the CLAIM: with --subject, the PR title's type must say what the render says.
-#      refactor, style, docs, chore and a git revert are the types of a change that
-#      renders empty; feat, fix, pin, promote and the rest are the author saying the
-#      render moved, which on base means a promotion skipping the ladder.
-# A change that touches no base tree is not this gate's business: OK, exit 0.
-# Usage: base-gate [--subject "<pr title>"] [base-ref] [head-ref]   defaults: origin/main HEAD
+# Two layers, because the two failure modes have different evidence: A change that touches no
+# base tree is not this gate's business: OK, exit 0.
+#
+# Usage:
+#   base-gate [--subject "<pr title>"] [base-ref] [head-ref]
+#
+# Arguments:
+#   base-ref, head-ref  the change to judge (default origin/main HEAD)
+#
+# Options:
+#   --subject "<pr title>"  also judge the claim: the title's type must say what the render
+#                           says
+#   -h, --help              this text
+#
+# Examples:
+#   # the fact alone: every consumed root renders byte-identical on both sides
+#   ./scripts/base-gate origin/main HEAD
+#   # fact and claim, as CI's pr-record runs it
+#   ./scripts/base-gate --subject "refactor(base): absorb the dev patch" origin/main HEAD
+#
+# See also: rule 5.4; the patterns page (base is sacred); stage 21
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 SUBJECT=''
 if [ "${1:-}" = "--subject" ]; then SUBJECT="${2:?--subject \"<pr title>\"}"; shift 2; fi

@@ -6,14 +6,32 @@
 # Memory and scrollback are not evidence. Git, the commit statuses, and the cluster's own
 # reported revision are - and all three outlive everyone who was on the call.
 #
-# It derives the blast radius from the commit itself: whichever status context went red
-# names the stamp and the cluster (kustomization/<stamp>/<cluster>), which is the identifier
+# It derives the blast radius from the commit itself: whichever status context went red names
+# the stamp and the cluster (kustomization/<stamp>/<cluster>), which is the identifier
 # alignment rule paying rent - one string, and no lookup table between the alert and the file.
 #
-# Usage: evidence <sha|subject-prefix> [stamp] [kube-context]
-#   e.g. evidence 9470bb4
-#        evidence 'break(app-prod): '
+# Usage:
+#   evidence <sha|subject-prefix> [stamp] [kube-context]
+#
+# Arguments:
+#   sha|subject-prefix   the commit, or the prefix of its subject
+#   stamp, kube-context  the blast radius, when the statuses cannot name it
+#
+# Options:
+#   -h, --help  this text
+#
+# Environment:
+#   EVIDENCE_CLUSTER_PREFIX  how kube contexts are named (default kind-ggp-)
+#
+# Examples:
+#   # by sha
+#   ./scripts/evidence 9470bb4
+#   # the newest break drill
+#   ./scripts/evidence 'break(app-prod): '
+#
+# See also: rule 3.6 (identifier alignment); the Act II checkpoint drill 4; audit-evidence (the skill)
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 SEL="${1:?usage: evidence <sha|subject-prefix> [stamp] [kube-context]}"
 STAMP="${2:-}"; KCTX="${3:-}"

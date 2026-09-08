@@ -1,12 +1,24 @@
 #!/usr/bin/env bash
-# The helm<->flux parity gate: the helm CLI is a render tool (chart authoring,
-# `helm template`/`lint`, values verification), so local renders must match what
-# helm-controller does in-cluster. Same chain as kustomize, with a free mapping:
-#   flux pin -> helm-controller version (flux2 manifests) -> go.mod helm.sh/helm/vN
-#   (replace wins over require; the major moved from v3 to v4 with flux 2.8) ->
-#   that IS the CLI version, digit for digit.
-# No skew ladder needed: helm's k8s window (n..n-3) covers the three-rung fleet.
+# Does the helm CLI match the helm library helm-controller embeds?
+#
+# The helm<->flux parity gate: the helm CLI is a render tool (chart authoring, `helm
+# template`/`lint`, values verification), so local renders must match what helm-controller
+# does in-cluster. Same chain as kustomize, with a free mapping: No skew ladder needed: helm's
+# k8s window (n..n-3) covers the three-rung fleet.
+#
+# Usage:
+#   check-helm-flux-parity
+#
+# Options:
+#   -h, --help  this text
+#
+# Examples:
+#   # PASS/FAIL with the pinned install on FAIL
+#   ./scripts/check-helm-flux-parity
+#
+# See also: rule 4.1; clusters/versions.yaml; check-kustomize-flux-parity
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 cd "$(dirname "$0")/.."
 VERSIONS=clusters/versions.yaml

@@ -1,19 +1,36 @@
 #!/usr/bin/env bash
-# Open a PR from the staged changes - and stop there.
+# Open a PR from the staged changes: branch, commit, push, open, and stop there.
 #
-#   pr-open <branch> "<subject>" [body-file]      (body on stdin when no file is given)
+# The first four steps of rule 2.4 - branch, commit, push, open - and never the fifth. Merging
+# is your line, after you have read the diff: The subject and body are linted by commit-gate
+# before anything is created, because the subject becomes the merge commit on main
+# (merge_commit_title=PR_TITLE) and the body its record (merge_commit_message=PR_BODY). An
+# empty body is refused: a PR that says nothing is not a deployment record - and a body that
+# cites no open work item (Refs:/Closes:, rule 2.5) is refused too: a change nobody asked for.
+# The branch name follows <type>/<issue>/<slug> (rule 2.4), and both segments are checked
+# against the PR: the type against the subject, the issue against the trailer.
 #
-# The first four steps of rule 2.4 - branch, commit, push, open - and never the fifth.
-# Merging is your line, after you have read the diff:
-#   [gh pr checks --watch --fail-fast &&] gh pr merge --merge --delete-branch && git switch main && git pull
-# The subject and body are linted by commit-gate before anything is created, because the
-# subject becomes the merge commit on main (merge_commit_title=PR_TITLE) and the body its
-# record (merge_commit_message=PR_BODY). An empty body is refused: a PR that says nothing
-# is not a deployment record - and a body that cites no open work item (Refs:/Closes:,
-# rule 2.5) is refused too: a change nobody asked for. The branch name follows
-# <type>/<issue>/<slug> (rule 2.4), and both segments are checked against the PR:
-# the type against the subject, the issue against the trailer.
+# Usage:
+#   pr-open <branch> "<subject>" [body-file]
+#
+# Arguments:
+#   branch     <type>/<issue>/<slug>; the type is checked against the subject, the issue
+#              against the trailer
+#   subject    the PR title, which becomes the merge commit's subject
+#   body-file  the deployment record; stdin when omitted
+#
+# Options:
+#   -h, --help  this text
+#
+# Examples:
+#   # body from a file
+#   ./scripts/pr-open promote/9/app-prod "promote(app-prod): app 0.1.2" body.md
+#   # body on stdin
+#   ./scripts/pr-open fix/12/probe "fix(app-dev): probe path" <<'EOF' ... EOF
+#
+# See also: rules 2.2 and 2.4; commit-gate; issue-gate; pr-revert
 set -euo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 cd "$(git rev-parse --show-toplevel)"
 die() { printf 'pr-open: %s\n' "$1" >&2; exit 1; }
 

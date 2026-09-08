@@ -1,17 +1,36 @@
 #!/usr/bin/env bash
-# Does this change cite a work item that exists? PASS/FAIL per issue, exit 1 on any FAIL.
+# Does this change cite a work item that exists, and is open? PASS/FAIL per issue.
 #
-#   issue-gate "<body>"                 a PR body (or commit message), as one argument
-#   issue-gate --file <path>            the same, read from a file
-#   issue-gate --landed "<body>" | --landed --file <path>
-#                                       the change has merged: a closed work item is fine
-#                                       (the merge may be what closed it)
+# PASS/FAIL per issue, exit 1 on any FAIL.
 #
-# Reads the Closes:/Refs: trailers (rule 2.5) - one per line, `Refs: #9` or
-# `Refs: #9, #12`. Every number must be an issue in THIS repo (not a pull request) and,
-# before the merge, open: a closed work item is finished work, and a change citing it is
-# a change nobody asked for.
+# Reads the Closes:/Refs: trailers (rule 2.5) - one per line, `Refs: #9` or `Refs: #9, #12`.
+# Every number must be an issue in THIS repo (not a pull request) and, before the merge, open:
+# a closed work item is finished work, and a change citing it is a change nobody asked for.
+#
+# Usage:
+#   issue-gate [--landed] "<body>"
+#   issue-gate [--landed] --file <path>
+#
+# Arguments:
+#   body  a PR body or commit message with its Refs:/Closes: trailers
+#
+# Options:
+#   --file <path>  read the body from a file
+#   --landed       the change has merged: a closed item is fine, the merge may have closed it
+#   -h, --help     this text
+#
+# Environment:
+#   GH_REPO  the repository (default: the one gh sees)
+#
+# Examples:
+#   # a body before pr-open
+#   ./scripts/issue-gate "$(cat body.md)"
+#   # the merge, as CI's push run judges it
+#   ./scripts/issue-gate --landed "$(git log -1 --format=%B)"
+#
+# See also: rule 2.5; pr-open; CI's pr-record job
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 landed=0
 [ "${1:-}" = --landed ] && { landed=1; shift; }
 case "${1:-}" in

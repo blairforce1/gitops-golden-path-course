@@ -1,21 +1,39 @@
 #!/usr/bin/env bash
-# Act IV drill runner: the fleet from nothing, with a robot in it, and the number from artifacts.
-# DESTRUCTIVE - it deletes and rebuilds all three kind clusters. Guarded by --yes.
-# "Nothing" here is every kind cluster; what survives is git, the three root keys under
-# ~/.config/gitops-golden-path/age/, and one flag: --write on the platform cluster's sync,
-# the robot's privilege (stage 14). Its key does not survive - cluster-sync mints a new
-# read-write one and registers it in the old one's place. Everything else the act built
-# comes back from git unasked: the two image controllers, the image objects, the Receiver
-# and its token, the digest pins and their policy. The hub's metric history dies with the
-# platform node (the store is pod-local), so a promotion straight after waits for traffic.
-# Drills 2 to 4 are PRs, a robot, an event and queries: the checkpoint runs them by hand
-# and the promote and audit-evidence skills run them on request; this script is the
-# rebuild they all start from. Same as act-3-drill with --write on local-01, the sweep on
-# the checkpoints the act's stages gate on (06 on the platform cluster, 07 fleet-wide),
-# the image objects and the Receiver waited Ready, and the key asserted read-write.
-# Timings are extracted from artifacts (namespace creation stamps, the stamps' own
-# reconcile history) - no stopwatch, same rule as act-checkpoint.md.
+# Act IV drill runner: the fleet from nothing, unattended, with the number from artifacts.
+#
+# DESTRUCTIVE - it deletes and rebuilds all three kind clusters. Guarded by --yes. "Nothing"
+# here is every kind cluster; what survives is git, the three root keys under
+# ~/.config/gitops-golden-path/age/, and one flag: --write on the platform cluster's sync, the
+# robot's privilege (stage 14). Its key does not survive - cluster-sync mints a new read-write
+# one and registers it in the old one's place. Everything else the act built comes back from
+# git unasked: the two image controllers, the image objects, the Receiver and its token, the
+# digest pins and their policy. The hub's metric history dies with the platform node (the
+# store is pod-local), so a promotion straight after waits for traffic. Drills 2 to 4 are PRs,
+# a robot, an event and queries: the checkpoint runs them by hand and the promote and
+# audit-evidence skills run them on request; this script is the rebuild they all start from.
+# Same as act-3-drill with --write on local-01, the sweep on the checkpoints the act's stages
+# gate on (06 on the platform cluster, 07 fleet-wide), the image objects and the Receiver
+# waited Ready, and the key asserted read-write. Timings are extracted from artifacts
+# (namespace creation stamps, the stamps' own reconcile history) - no stopwatch, same rule as
+# act-checkpoint.md.
+#
+# Usage:
+#   act-4-drill
+#   act-4-drill --yes
+#
+# Options:
+#   --yes       run it; bare, the script prints what it would destroy and exits 1
+#   -h, --help  this text
+#
+# Examples:
+#   # read the blast radius, nothing is touched
+#   ./scripts/act-4-drill
+#   # the run; the log is /tmp/act-4-drill.log
+#   ./scripts/act-4-drill --yes
+#
+# See also: the Act IV checkpoint page; run-drill (the skill that runs this and writes the pack); checkpoint-07
 set -euo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 cd "$(dirname "$0")/.."
 

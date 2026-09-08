@@ -1,15 +1,31 @@
 #!/usr/bin/env bash
-# Undo a merged PR, by PR: branch, `git revert -m 1`, push, open - and stop there.
-#
-#   pr-revert [<merge-sha>] "<why now>" ["#<issue>"]     (default: HEAD; the work item is
-#                                                    inherited from the reverted merge's trailers)
+# Undo a merged PR, by PR: branch, git revert -m 1, push, open, and stop there.
 #
 # git writes the subject - Revert "<the PR title>" - and it is never rewritten (commit
-# convention rule 6): that string is the durable link to what it undoes. The body is
-# assembled from what git already knows plus the one sentence only you know: why now.
-# Merging is your line, after the diff:
-#   [gh pr checks --watch --fail-fast &&] gh pr merge --merge --delete-branch && git switch main && git pull
+# convention rule 6): that string is the durable link to what it undoes. The body is assembled
+# from what git already knows plus the one sentence only you know: why now. Merging is your
+# line, after the diff:
+#
+# Usage:
+#   pr-revert [<merge-sha>] "<why now>" ["#<issue>"]
+#
+# Arguments:
+#   merge-sha  the merge to undo (default HEAD)
+#   why now    the one sentence only you know; the rest of the body is assembled from git
+#   #<issue>   the work item; default: inherited from the reverted merge's trailers
+#
+# Options:
+#   -h, --help  this text
+#
+# Examples:
+#   # the newest merge
+#   ./scripts/pr-revert "the break drill is over; restore prod"
+#   # a named merge
+#   ./scripts/pr-revert 9470bb4 "rolled back after the SLO burned" "#14"
+#
+# See also: commit convention rule 6; revert-gate; rule 5.10 (secrets roll forward)
 set -euo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 cd "$(git rev-parse --show-toplevel)"
 die() { printf 'pr-revert: %s\n' "$1" >&2; exit 1; }
 

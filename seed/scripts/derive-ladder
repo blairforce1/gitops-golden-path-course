@@ -1,18 +1,34 @@
 #!/usr/bin/env bash
-# Derive the Kubernetes version ladder from its authority instead of guessing it.
-# The authority is AKS's support window (rule 4.3): the three GA minors AKS runs
-# today become platform=next, dev=current, prod=stable, and the newest
-# kindest/node patch image for each minor comes from the registry. Scrapes the
-# AKS release calendar; a scrape is fragile by nature, so a failed parse names
-# the page and stops - nothing falls back to a guess:
+# Derive the Kubernetes version ladder from its authority, AKS's support window.
+#
+# The authority is AKS's support window (rule 4.3): the three GA minors AKS runs today become
+# platform=next, dev=current, prod=stable, and the newest kindest/node patch image for each
+# minor comes from the registry. Scrapes the AKS release calendar; a scrape is fragile by
+# nature, so a failed parse names the page and stops - nothing falls back to a guess:
 # https://learn.microsoft.com/azure/aks/supported-kubernetes-versions
 #
-#   derive-ladder            print the derived ladder (read before writing)
-#   derive-ladder --window   print just the three minors, newest first
-#   derive-ladder --write    append the ladder to clusters/versions.yaml
-#                            (refuses if one exists: from stage 07 on the
-#                            ladder moves by PR - stage 16 climbs it)
+# Usage:
+#   derive-ladder
+#   derive-ladder --window
+#   derive-ladder --write
+#
+# Options:
+#   --window    print just the three minors, newest first
+#   --write     append the ladder to clusters/versions.yaml; refuses if one exists
+#   -h, --help  this text
+#
+# Environment:
+#   TMPDIR  where the fetched calendar page is kept on a failed parse (default /tmp)
+#
+# Examples:
+#   # read before writing
+#   ./scripts/derive-ladder
+#   # the window alone, as check-k8s-aks-parity reads it
+#   ./scripts/derive-ladder --window
+#
+# See also: rule 4.3; stage 07; check-k8s-aks-parity; stage 16
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 cd "$(dirname "$0")/.."
 VERSIONS=clusters/versions.yaml

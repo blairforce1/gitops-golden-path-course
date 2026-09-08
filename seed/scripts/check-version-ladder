@@ -1,9 +1,24 @@
 #!/usr/bin/env bash
-# The version-ladder gate: the fleet spans three Kubernetes minors by design
-# (platform=next, dev=current, prod=stable), and kubectl's +/-1 skew means only
-# the MIDDLE rung reaches all three - so kubectl must track the dev class.
-# Pins live in clusters/versions.yaml; a dev upgrade PR bumps kubectl there too.
+# Does kubectl track the dev class, and is every rung within one minor of it?
+#
+# The version-ladder gate: the fleet spans three Kubernetes minors by design (platform=next,
+# dev=current, prod=stable), and kubectl's +/-1 skew means only the MIDDLE rung reaches all
+# three - so kubectl must track the dev class. Pins live in clusters/versions.yaml; a dev
+# upgrade PR bumps kubectl there too.
+#
+# Usage:
+#   check-version-ladder
+#
+# Options:
+#   -h, --help  this text
+#
+# Examples:
+#   # PASS per rung and per live cluster; FAIL hands out the kubectl install
+#   ./scripts/check-version-ladder
+#
+# See also: rule 4.3; clusters/versions.yaml; stages 07 and 16
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 cd "$(dirname "$0")/.."
 VERSIONS=clusters/versions.yaml

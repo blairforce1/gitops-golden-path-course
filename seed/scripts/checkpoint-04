@@ -1,12 +1,26 @@
 #!/usr/bin/env bash
-# Stage 04 checkpoint: the loop notifies - Provider/Alert live, and the reconciled revision wears its status.
-# Every line is PASS/FAIL + what it means; exits non-zero if anything failed.
-# Note for the act checkpoint's cold start: the token secret is the stage-04 IOU. Before
-# stage 06 it lives OUTSIDE git, so a rebuild loses it until stage 04 step 1 is re-run.
-# From stage 06 on the debt consolidates: install the sops-age root key and git restores
-# the token itself (cluster-secrets stamp) - the check below reads Flux's ownership labels
-# to report which era it's seeing.
+# Stage 04 checkpoint: the loop notifies, and the reconciled revision wears its status.
+#
+# Every line is PASS/FAIL + what it means; exits non-zero if anything failed. Note for the act
+# checkpoint's cold start: the token secret is the stage-04 IOU. Before stage 06 it lives
+# OUTSIDE git, so a rebuild loses it until stage 04 step 1 is re-run. From stage 06 on the
+# debt consolidates: install the sops-age root key and git restores the token itself
+# (cluster-secrets stamp) - the check below reads Flux's ownership labels to report which era
+# it's seeing.
+#
+# Usage:
+#   checkpoint-04
+#
+# Options:
+#   -h, --help  this text
+#
+# Examples:
+#   # PASS/FAIL per claim, exit 1 on any FAIL
+#   ./scripts/checkpoint-04
+#
+# See also: stage 04; rule 5.1
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)   # derived - no identity stored
 pass=0; fail=0

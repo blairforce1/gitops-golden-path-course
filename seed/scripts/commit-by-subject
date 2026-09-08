@@ -1,20 +1,37 @@
 #!/usr/bin/env bash
-# The sha of the commit whose subject is the one given: how the checkpoints, the drills and
-# the gates find "the change" without guessing from HEAD.
+# The sha of the commit whose subject is exactly the one given, on the first-parent line.
 #
 # Exact, not a substring. `git revert` quotes the subject it undoes, so a substring search
 # finds the revert (newer, and the opposite event) instead of the break, and an unanchored
 # version match finds 0.1.10 when you asked for 0.1.1. awk, not grep, so no grep.patternType
-# setting can reinterpret the parentheses the commit grammar is full of. First-parent, so
-# the answer is the merge commit (the one that wears statuses), never the branch commit
-# that shares its title. GitHub appends " (#N)" to a merge commit's subject even under
-# merge_commit_title: PR_TITLE: a subject given without that suffix matches with the
-# suffix ignored; one given with it (a revert quotes it) matches verbatim.
+# setting can reinterpret the parentheses the commit grammar is full of. First-parent, so the
+# answer is the merge commit (the one that wears statuses), never the branch commit that
+# shares its title. GitHub appends " (#N)" to a merge commit's subject even under
+# merge_commit_title: PR_TITLE: a subject given without that suffix matches with the suffix
+# ignored; one given with it (a revert quotes it) matches verbatim.
 #
-# Usage: commit-by-subject <subject>            the commit whose subject is exactly this
-#        commit-by-subject --prefix <subject>   the newest whose subject starts with this
 # Prints the full sha. Exit 1, with a hint on stderr, when nothing matches.
+#
+# Usage:
+#   commit-by-subject <subject>
+#   commit-by-subject --prefix <subject>
+#
+# Arguments:
+#   subject  the exact subject; GitHub's ' (#N)' suffix is ignored when you leave it off
+#
+# Options:
+#   --prefix    the newest commit whose subject starts with the text
+#   -h, --help  this text
+#
+# Examples:
+#   # the merge that promoted
+#   ./scripts/commit-by-subject "promote(app-prod): app 0.1.2"
+#   # the newest break drill
+#   ./scripts/commit-by-subject --prefix 'break(app-prod): '
+#
+# See also: rung-time, evidence, pr-revert (all find their commit this way, never by HEAD)
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 mode=exact
 if [ "${1:-}" = "--prefix" ]; then mode=prefix; shift; fi

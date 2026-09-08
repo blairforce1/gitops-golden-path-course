@@ -1,7 +1,27 @@
 #!/usr/bin/env bash
 # Stage 05 checkpoint: third-party software as a pinned, declarative dependency.
+#
 # Every line is PASS/FAIL + what it means; exits non-zero if anything failed.
+#
+# Usage:
+#   CTX=<kube-context> checkpoint-05
+#
+# Options:
+#   -h, --help  this text
+#
+# Environment:
+#   CTX        the cluster to read (default kind-ggp-local-01)
+#   HTTP_PORT  the ingress port the app answers on (default 8080)
+#
+# Examples:
+#   # the platform cluster
+#   ./scripts/checkpoint-05
+#   # another cluster
+#   CTX=kind-ggp-dev-01 HTTP_PORT=8081 ./scripts/checkpoint-05
+#
+# See also: stage 05; rule 5.11
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 CTX="${CTX:-kind-ggp-local-01}"
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)   # derived - no identity stored

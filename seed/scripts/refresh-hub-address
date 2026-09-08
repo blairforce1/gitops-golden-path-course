@@ -1,13 +1,30 @@
 #!/usr/bin/env bash
-# Re-derive the monitoring hub's container IP into every cluster's cluster-facts.
-# FALLBACK PATH: cluster-facts normally name the hub by the platform node's container
-# name (stage 09 step 2), which survives reboots and rebuilds. Use this only if your
-# environment does not resolve container names and you pinned the IP instead: a pinned
-# IP is created with the node container and dies with it, so every reboot or rebuild
-# invalidates the committed value and the spokes remote-write into nothing.
-# This edits git; you review and commit.
-# (On AKS this becomes a private endpoint that outlives the cluster - stage 12+.)
+# Re-derive the monitoring hub's container IP into every cluster's cluster-facts (fallback path).
+#
+# FALLBACK PATH: cluster-facts normally name the hub by the platform node's container name
+# (stage 09 step 2), which survives reboots and rebuilds. Use this only if your environment
+# does not resolve container names and you pinned the IP instead: a pinned IP is created with
+# the node container and dies with it, so every reboot or rebuild invalidates the committed
+# value and the spokes remote-write into nothing. This edits git; you review and commit. (On
+# AKS this becomes a private endpoint that outlives the cluster - stage 12+.)
+#
+# Usage:
+#   refresh-hub-address
+#
+# Options:
+#   -h, --help  this text
+#
+# Environment:
+#   HUB_NODE  the platform node's container (default ggp-local-01-control-plane)
+#   HUB_PORT  the hub's NodePort (default 30090)
+#
+# Examples:
+#   # only when container names do not resolve in your environment; you review and commit
+#   ./scripts/refresh-hub-address
+#
+# See also: stage 09 step 2
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 NODE="${HUB_NODE:-ggp-local-01-control-plane}"
 PORT="${HUB_PORT:-30090}"

@@ -1,7 +1,31 @@
 #!/usr/bin/env bash
-# Create the local kind cluster for gitops-golden-path.
-# Detects docker or podman; fails early with a named missing tool.
+# Create a local kind cluster for a class, on the node image its class pins.
+#
+# Create the local kind cluster for gitops-golden-path. Detects docker or podman; fails early
+# with a named missing tool.
+#
+# Usage:
+#   CLASS=<platform|dev|prod> CLUSTER_NAME=<name> HTTP_PORT=<n> HTTPS_PORT=<n> cluster-up
+#
+# Options:
+#   -h, --help  this text
+#
+# Environment:
+#   CLASS                  the class whose pin in clusters/versions.yaml picks the node image
+#                          (default platform)
+#   CLUSTER_NAME           the kind cluster name (default ggp-local-01)
+#   HTTP_PORT, HTTPS_PORT  host ports for the ingress (default 8080, 8443)
+#   KIND_NODE_IMAGE        override the image; unset means the class pin
+#
+# Examples:
+#   # the platform cluster
+#   ./scripts/cluster-up
+#   # the prod spoke
+#   CLASS=prod CLUSTER_NAME=ggp-prod-01 HTTP_PORT=8082 HTTPS_PORT=8445 ./scripts/cluster-up
+#
+# See also: clusters/versions.yaml; stage 07; cluster-down; cluster-sync
 set -euo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 CLUSTER_NAME="${CLUSTER_NAME:-ggp-local-01}"
 

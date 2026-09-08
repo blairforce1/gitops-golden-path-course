@@ -1,22 +1,38 @@
 #!/usr/bin/env bash
-# Release notes for ONE CLUSTER, from what that cluster says it is running.
+# Release notes for one cluster, from what that cluster says it is running.
 #
-# The premise: a fleet has no single "release". Three clusters share one repo and each is
-# at its own revision, so "what shipped" is only ever a question about a cluster. Flux
-# already records the answer - a stamp's .status.lastAppliedRevision is the commit that
-# cluster actually applied - which makes the range a query rather than a tagging ceremony.
-# No tags, no release branches, no changelog file to keep honest.
+# The premise: a fleet has no single "release". Three clusters share one repo and each is at
+# its own revision, so "what shipped" is only ever a question about a cluster. Flux already
+# records the answer - a stamp's .status.lastAppliedRevision is the commit that cluster
+# actually applied - which makes the range a query rather than a tagging ceremony. No tags, no
+# release branches, no changelog file to keep honest.
 #
 # Two views, and the difference is why merge-commit-only matters:
-#   --first-parent  one line per PR      - what shipped, as reviewed
-#   (default)       every commit         - what changed, as authored
 #
-# Usage: release-notes <stamp> <kube-context> [since] [--first-parent] [--record]
-#   since: a git revision, or <stamp>@<kube-context> to diff two rungs (the promotion gap)
-#          default: the revision recorded by the last --record run, else the root commit
-#   e.g. release-notes app-prod kind-ggp-prod-01
-#        release-notes app-prod kind-ggp-prod-01 app-dev@kind-ggp-dev-01   # what dev has that prod hasn't
+# Usage:
+#   release-notes <stamp> <kube-context> [since] [--first-parent] [--record]
+#
+# Arguments:
+#   stamp, kube-context  the stamp and the cluster it runs on
+#   since                a git revision, or <stamp>@<kube-context> to diff two rungs
+#
+# Options:
+#   --first-parent  one line per PR: what shipped, as reviewed
+#   --record        write the notes as a file under docs/ for a PR
+#   -h, --help      this text
+#
+# Environment:
+#   CLIFF_IMAGE  the pinned git-cliff container (default docker.io/orhunp/git-cliff:2.13.1)
+#
+# Examples:
+#   # what prod is running, as reviewed
+#   ./scripts/release-notes app-prod kind-ggp-prod-01 --first-parent
+#   # the promotion gap
+#   ./scripts/release-notes app-prod kind-ggp-prod-01 app-dev@kind-ggp-dev-01 --first-parent
+#
+# See also: stage 26; promote (the skill reads the gap this way)
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 CLIFF="${CLIFF_IMAGE:-docker.io/orhunp/git-cliff:2.13.1}"
 

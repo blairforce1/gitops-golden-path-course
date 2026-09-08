@@ -1,21 +1,40 @@
 #!/usr/bin/env bash
+# Layout gate: one resource per file, named <name>.<kind>.yaml, in a typed folder.
+#
 # Layout gate: rules 3.1 and 3.2 as a verdict. One resource per file; the file is
 # <metadata.name>.<kind>.yaml, lowercase, dots in the name written as dashes (patches
-# <target>.<kind>.patch.yaml, replacements <target>.<kind>.replacement.yaml); and it
-# sits in a typed folder: resources/, patches/, replacements/ or secrets/.
+# <target>.<kind>.patch.yaml, replacements <target>.<kind>.replacement.yaml); and it sits in a
+# typed folder: resources/, patches/, replacements/ or secrets/.
 #
-# Judged over the resource trees only: apps/ infrastructure/ clusters/ policy/ tenants/.
-# Not judged: kustomization.yaml (tool-mandated), flux-system/ (tool-managed, rewritten
-# on every re-bootstrap), clusters/versions.yaml (a pin file, not a resource), and
-# anything under config/, which holds generator inputs beside their kustomization
-# (rule 3.2). A JSON6902 patch is an op list with no kind inside, so for it and for a
-# replacement spec the filename alone names the target; a strategic-merge patch and every
-# resource must agree with their own kind and metadata.name.
+# Judged over the resource trees only: apps/ infrastructure/ clusters/ policy/ tenants/. Not
+# judged: kustomization.yaml (tool-mandated), flux-system/ (tool-managed, rewritten on every
+# re-bootstrap), clusters/versions.yaml (a pin file, not a resource), and anything under
+# config/, which holds generator inputs beside their kustomization (rule 3.2). A JSON6902
+# patch is an op list with no kind inside, so for it and for a replacement spec the filename
+# alone names the target; a strategic-merge patch and every resource must agree with their own
+# kind and metadata.name.
 #
-# Needs yq and nothing else, so checkpoint-02 runs it from stage 02; style-gate runs it
-# first from stage 11, which puts it in the pre-commit hook and CI without another line.
-# Usage: layout-gate [files...]   (no args = every tracked YAML under the trees)
+# Needs yq and nothing else, so checkpoint-02 runs it from stage 02; style-gate runs it first
+# from stage 11, which puts it in the pre-commit hook and CI without another line.
+#
+# Usage:
+#   layout-gate [files...]
+#
+# Arguments:
+#   files  the files to judge (default: every tracked YAML under the resource trees)
+#
+# Options:
+#   -h, --help  this text
+#
+# Examples:
+#   # the whole tree
+#   ./scripts/layout-gate
+#   # one file
+#   ./scripts/layout-gate apps/base/app/resources/app.deployment.yaml
+#
+# See also: rules 3.1 and 3.2; style-gate and checkpoint-02, which run it
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 in_trees() { case "$1" in apps/*|infrastructure/*|clusters/*|policy/*|tenants/*) return 0;; esac; return 1; }
 exempt()   { case "$1" in kustomization.yaml|*/kustomization.yaml|*/flux-system/*|clusters/versions.yaml|*/config/*) return 0;; esac; return 1; }

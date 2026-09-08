@@ -1,8 +1,24 @@
 #!/usr/bin/env bash
 # Which protected paths does a change touch, and what does that mean for review?
+#
 # Reports; it does not block - blocking is branch protection's job (stage 21 step 2).
-# Usage: path-gate [base-ref] [head-ref]     defaults: origin/main...HEAD
+#
+# Usage:
+#   path-gate [base-ref] [head-ref]
+#
+# Arguments:
+#   base-ref, head-ref  the change to read (default origin/main HEAD)
+#
+# Options:
+#   -h, --help  this text
+#
+# Examples:
+#   # a branch
+#   ./scripts/path-gate origin/main HEAD
+#
+# See also: rule 5.4; CODEOWNERS; stage 21
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 BASE="${1:-origin/main}"
 HEAD="${2:-HEAD}"

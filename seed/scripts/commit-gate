@@ -1,18 +1,37 @@
 #!/usr/bin/env bash
-# The commit convention as a verdict - one grammar, four ways in.
+# The commit convention as a verdict: one grammar, four ways in.
 #
-#   --docs [files...]     every commit message the walkthrough tells a reader to type
-#   --range <rev-range>   real commits, e.g. origin/main..HEAD
-#   --file <path>         one message file - the commit-msg hook's argument
-#   --subject "<t>" [<b>] one subject (+ optional body) - the PR-title check
-#
-# The point of --docs is that the course cannot teach a convention it does not follow.
-# Every `git commit -m`, `gh pr create --title`, `pr-open <branch> "<subject>"` and
-# `--commit-template` string in the walkthrough is extracted and judged by the SAME grammar that judges real commits, so
-# "the docs drifted" is a failing check rather than a thing someone notices in year two.
+# The point of --docs is that the course cannot teach a convention it does not follow. Every
+# `git commit -m`, `gh pr create --title`, `pr-open <branch> "<subject>"` and
+# `--commit-template` string in the walkthrough is extracted and judged by the SAME grammar
+# that judges real commits, so "the docs drifted" is a failing check rather than a thing
+# someone notices in year two.
 #
 # Grammar and rules: appendices/commit-convention.md in the course repo
+#
+# Usage:
+#   commit-gate --docs [files...]
+#   commit-gate --range <rev-range>
+#   commit-gate --file <path>
+#   commit-gate --subject "<subject>" ["<body>"]
+#
+# Options:
+#   --docs [files...]        every commit message the walkthrough tells a reader to type
+#                            (default: the whole course)
+#   --range <rev-range>      real commits, e.g. origin/main..HEAD
+#   --file <path>            one message file: the commit-msg hook's argument
+#   --subject "<t>" ["<b>"]  one subject and optional body: the PR-title check
+#   -h, --help               this text
+#
+# Examples:
+#   # a PR title before pr-open sees it
+#   ./scripts/commit-gate --subject "promote(app-prod): app 0.1.2" "Refs: #9"
+#   # the branch
+#   ./scripts/commit-gate --range origin/main..HEAD
+#
+# See also: appendices/commit-convention.md; rule 2.1; the commit-msg hook (stage 11)
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 TYPES_DOMAIN='break|pin|promote|bind|rotate|access|policy'
 TYPES_STANDARD='feat|fix|docs|refactor|test|ci|chore|revert|perf|build|style'

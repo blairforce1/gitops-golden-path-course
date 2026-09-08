@@ -1,17 +1,37 @@
 #!/usr/bin/env bash
-# The main ruleset, amended - never replaced. Stage 00 created it; later stages add one
-# requirement each, and this is how, so the JSON is written once and the growth is a log.
-# Stage 00 also created the tags ruleset (immutable once created); it is never amended.
+# The main ruleset, amended and never replaced; the tags ruleset read back.
 #
-#   ruleset show                       every ruleset: what main requires, that tags are
-#                                      permanent, and who may bypass (nobody)
-#   ruleset require-check <name>...    status checks that must pass before a merge (a job's
-#                                      name in .github/workflows/*.yaml is its check name)
-#   ruleset require-owners             code-owner review on the paths CODEOWNERS names
+# Stage 00 created it; later stages add one requirement each, and this is how, so the JSON is
+# written once and the growth is a log. Stage 00 also created the tags ruleset (immutable once
+# created); it is never amended.
 #
-# Checks are not "strict" (the branch need not be up to date with main): a solo repo and
-# the stage-14 robot would otherwise stall every time main moved under an open PR.
+# Checks are not "strict" (the branch need not be up to date with main): a solo repo and the
+# stage-14 robot would otherwise stall every time main moved under an open PR.
+#
+# Usage:
+#   ruleset show
+#   ruleset require-check <name>...
+#   ruleset require-owners
+#
+# Arguments:
+#   show                     every ruleset: what main requires, that tags are permanent, who
+#                            may bypass (nobody)
+#   require-check <name>...  status checks that must pass before a merge (a job's name is its
+#                            check name)
+#   require-owners           code-owner review on the paths CODEOWNERS names
+#
+# Options:
+#   -h, --help  this text
+#
+# Examples:
+#   # read it back
+#   ./scripts/ruleset show
+#   # a new required check
+#   ./scripts/ruleset require-check verify
+#
+# See also: rule 1.3; stages 00, 08, 11, 21; check-repo
 set -euo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 die() { printf 'ruleset: %s\n' "$1" >&2; exit 1; }
 repo="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
 id="$(gh api "repos/$repo/rulesets" --jq '.[] | select(.name == "main") | .id')"

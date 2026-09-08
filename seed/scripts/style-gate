@@ -1,17 +1,27 @@
 #!/usr/bin/env bash
-# Style gate: the YAML style convention as an executable verdict, in two halves -
-#   kustofmt  - the FORMAT authority (kyaml's emitted style: indentless sequences,
-#               block over flow, canonical spacing). Skips sops files on its own.
-#               Installed natively, pinned in clusters/versions.yaml to the kyaml the
-#               kustomize pin ships: it is a writer under -w and runs in the pre-commit
-#               hook on every commit, so the operator side of rule 4.2 wins.
-#   yamllint  - everything formatting can't judge (truthy keys, trailing space,
-#               duplicate keys), configured by the committed .yamllint.yaml and run
-#               --strict: a warning is a verdict too, or the rule is decoration.
-# yamllint is a pinned container. Both pins are the same in CI, the git hooks
-# (stage 11) and your terminal, so every venue reaches the identical verdict.
-# Usage: style-gate [files...]   (no args = every tracked YAML outside tool-owned trees)
+# Style gate: the YAML convention as a verdict, kustofmt for format and yamllint for the rest.
+#
+# Both pins are the same in CI, the git hooks (stage 11) and your terminal, so every venue
+# reaches the identical verdict.
+#
+# Usage:
+#   style-gate [files...]
+#
+# Arguments:
+#   files  the files to judge (default: every tracked YAML outside tool-owned trees)
+#
+# Options:
+#   -h, --help  this text
+#
+# Examples:
+#   # the whole tree, as CI and the pre-push hook run it
+#   ./scripts/style-gate
+#   # the staged files, as the pre-commit hook runs it
+#   ./scripts/style-gate apps/overlays/dev/kustomization.yaml
+#
+# See also: rule 3.4; .yamllint.yaml; style-fix; layout-gate
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 YAMLLINT_IMG="docker.io/pipelinecomponents/yamllint:0.35.0"
 

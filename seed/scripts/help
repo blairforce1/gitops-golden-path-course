@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# The menu: every script here with what it does, how it is called and an example.
+#
+# Read off each script's own header, the same text its --help prints, and grouped the way
+# the README names the families; then the operating skills, from their front matter.
+# Nothing here is a second copy: change a script's header and the menu follows.
+#
+# Usage:
+#   help
+#   help --all
+#   help <script>
+#
+# Arguments:
+#   script  a script in this folder; runs its --help
+#
+# Options:
+#   --all       the menu with every script's Usage, Arguments, Options, Environment and Examples
+#   -h, --help  this text
+#
+# Examples:
+#   # the menu
+#   ./scripts/help
+#   # one script's help
+#   ./scripts/help soak-gate
+#
+# See also: scripts/README.md (the long-form table and the header layout every script follows)
+set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
+cd "$(dirname "$0")"
+case "${1-}" in
+  --all|"") ;;
+  *) [ -x "./$1" ] || { echo "help: no script named '$1' here; ./scripts/help lists them"; exit 2; }
+     exec "./$1" --help ;;
+esac
+all=${1-}
+desc() { sed -n '2p' "$1" | sed 's/^# \{0,1\}//'; }
+detail() { awk 'NR==1{next} /^#/{ if ($0 ~ /^# *Usage:/) p=1; if (p) print; next } {exit}' "$1" | sed 's/^# \{0,1\}/      /'; }
+family() {
+  case "$1" in
+    cluster-*) echo "1 The fleet's lifecycle";;
+    checkpoint-*) echo "2 Stage checkpoints (is my fleet green)";;
+    check|check-*) echo "3 Toolchain and ladder checks (are my tools and pins right)";;
+    act-*-drill) echo "4 Act drills (the fleet from nothing)";;
+    *-gate|style-fix) echo "5 Gates (one class of evidence, one verdict)";;
+    pr-*|commit-by-subject|ruleset|help) echo "6 The forge: PRs, rulesets, commits";;
+    *-time|dora|evidence|release-notes|slo-watch) echo "7 Evidence and measures (numbers from artifacts)";;
+    *) echo "8 Tools";;
+  esac
+}
+echo "scripts/ - run any of these from the repo root as ./scripts/<name>; <name> --help prints its header"
+for fam in $(for s in *; do [ -x "$s" ] && [ "$s" != help ] && family "$s"; done | sort -u | cut -d' ' -f1 | sort -un); do
+  title=$(for s in *; do [ -x "$s" ] && family "$s"; done | sort -u | awk -v n="$fam" '$1==n {sub(/^[0-9] /,""); print; exit}')
+  echo; echo "== $title"
+  for s in *; do
+    [ -x "$s" ] && [ "$s" != help ] || continue
+    [ "$(family "$s" | cut -d' ' -f1)" = "$fam" ] || continue
+    printf '  %-33s %s\n' "$s" "$(desc "$s")"
+    [ "$all" = "--all" ] && detail "$s"
+  done
+done
+if [ -d ../.claude/skills ]; then
+  echo; echo "== Operating skills (in Claude Code, from the repo root; each one's SKILL.md is the runbook)"
+  for f in ../.claude/skills/*/SKILL.md; do
+    name=$(sed -n 's/^name: *//p' "$f" | head -1); hint=$(sed -n 's/^argument-hint: *//p' "$f" | head -1 | tr -d '"')
+    d=$(awk '/^description:/{p=1; sub(/^description: *>?-? */,""); if ($0!="") {print; exit}; next} p && NF {print; exit}' "$f")
+    printf '  /%-32s %s\n' "$name $hint" "$(printf '%s' "$d" | cut -c1-110)"
+  done
+fi

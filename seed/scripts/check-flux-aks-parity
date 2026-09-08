@@ -1,10 +1,24 @@
 #!/usr/bin/env bash
 # Does the local Flux CLI match the Flux release bundled in AKS's microsoft.flux extension?
-# The Act VIII claim - "AKS absorbs what you built by hand" - is only honest if the local
-# and managed Flux versions agree. Scrapes Microsoft's release notes (newest entry first);
-# a scrape is fragile by nature, so failures WARN rather than block, and the page is the
+#
+# The Act VIII claim - "AKS absorbs what you built by hand" - is only honest if the local and
+# managed Flux versions agree. Scrapes Microsoft's release notes (newest entry first); a
+# scrape is fragile by nature, so failures WARN rather than block, and the page is the
 # fallback: https://learn.microsoft.com/azure/azure-arc/kubernetes/flux-gitops-release-notes
+#
+# Usage:
+#   check-flux-aks-parity
+#
+# Options:
+#   -h, --help  this text
+#
+# Examples:
+#   # PASS on the same minor line; WARN if the scrape breaks
+#   ./scripts/check-flux-aks-parity
+#
+# See also: rule 4.3; stage 00; Act VIII
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 NOTES_URL="https://learn.microsoft.com/azure/azure-arc/kubernetes/flux-gitops-release-notes"
 

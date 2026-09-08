@@ -1,9 +1,29 @@
 #!/usr/bin/env bash
-# Watch a cluster's SLIs move, one line per sample. The point of the tool is TIME:
-# SLIs are rate() windows, so a break takes ~a minute to show and a fix takes the
-# window length to clear. Ctrl-C when you have seen what you came for.
-# Usage: slo-watch <cluster> [interval-seconds]     e.g. slo-watch dev-01 15
+# Watch a cluster's SLIs move, one line per sample, until Ctrl-C.
+#
+# The point of the tool is TIME: SLIs are rate() windows, so a break takes ~a minute to show
+# and a fix takes the window length to clear. Ctrl-C when you have seen what you came for.
+#
+# Usage:
+#   slo-watch <cluster> [interval-seconds]
+#
+# Arguments:
+#   cluster           a remote-writing spoke: dev-01 or prod-01
+#   interval-seconds  seconds between samples (default 30)
+#
+# Options:
+#   -h, --help  this text
+#
+# Environment:
+#   SLO_WATCH_PORT  the local port for the hub port-forward (default 19096)
+#
+# Examples:
+#   # every 15 seconds
+#   ./scripts/slo-watch dev-01 15
+#
+# See also: stage 09; slo-gate
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 CLUSTER="${1:?usage: slo-watch <cluster> [interval-seconds]}"
 EVERY="${2:-15}"

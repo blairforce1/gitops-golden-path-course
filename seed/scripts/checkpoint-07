@@ -1,7 +1,21 @@
 #!/usr/bin/env bash
-# Stage 07 checkpoint: the fleet exists - three clusters, each running what its folder says.
+# Stage 07 checkpoint: the fleet exists, three clusters each running what its folder says.
+#
 # Every line is PASS/FAIL + what it means; exits non-zero if anything failed.
+#
+# Usage:
+#   checkpoint-07
+#
+# Options:
+#   -h, --help  this text
+#
+# Examples:
+#   # PASS/FAIL per claim, exit 1 on any FAIL
+#   ./scripts/checkpoint-07
+#
+# See also: stage 07; check-version-ladder
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)   # derived - no identity stored
 pass=0; fail=0

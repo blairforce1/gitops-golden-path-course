@@ -1,8 +1,22 @@
 #!/usr/bin/env bash
-# Stage 09 checkpoint: the fleet reports to one place - hub sees every cluster, per-CR state is a metric.
+# Stage 09 checkpoint: the fleet reports to one place, per-CR state as a metric on the hub.
+#
 # Every line is PASS/FAIL + what it means; exits non-zero if anything failed.
 # Background-process rule: the hub port-forward gets a readiness loop and an explicit stop.
+#
+# Usage:
+#   checkpoint-09
+#
+# Options:
+#   -h, --help  this text
+#
+# Examples:
+#   # PASS/FAIL per claim, exit 1 on any FAIL
+#   ./scripts/checkpoint-09
+#
+# See also: stage 09; slo-gate; detect-time
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 pass=0; fail=0
 ok()  { echo "PASS  $1"; pass=$((pass+1)); }

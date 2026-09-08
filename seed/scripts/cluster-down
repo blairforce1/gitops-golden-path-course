@@ -1,6 +1,26 @@
 #!/usr/bin/env bash
+# Delete a local kind cluster. Everything comes back from git; that is the point.
+#
 # Delete the local kind cluster. Everything comes back from git - that's the point.
+#
+# Usage:
+#   CLUSTER_NAME=<name> cluster-down
+#
+# Options:
+#   -h, --help  this text
+#
+# Environment:
+#   CLUSTER_NAME  the cluster to delete (default ggp-local-01)
+#
+# Examples:
+#   # the platform cluster
+#   ./scripts/cluster-down
+#   # a spoke
+#   CLUSTER_NAME=ggp-prod-01 ./scripts/cluster-down
+#
+# See also: cluster-up; cluster-sync; every act checkpoint's drill 1
 set -euo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 CLUSTER_NAME="${CLUSTER_NAME:-ggp-local-01}"
 

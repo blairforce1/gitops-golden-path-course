@@ -1,26 +1,48 @@
 #!/usr/bin/env bash
 # Is this change trying to land inside a customer's change freeze?
 #
-# A freeze is a MERGE-TIME control, not a runtime one. The naive implementation -
-# `flux suspend kustomization` - stops the reconciler, and the CR's own API doc says what
-# that means: "suspend subsequent kustomize executions". ALL of them, including drift
-# correction. So a suspended stamp no longer repairs a hand-edited Deployment, which makes
-# the freeze window the least safe window of the year. It also never expires, blocks the
-# emergency fix you actually need, and leaves no record of who froze what or why.
+# A freeze is a MERGE-TIME control, not a runtime one. The naive implementation - `flux
+# suspend kustomization` - stops the reconciler, and the CR's own API doc says what that
+# means: "suspend subsequent kustomize executions". ALL of them, including drift correction.
+# So a suspended stamp no longer repairs a hand-edited Deployment, which makes the freeze
+# window the least safe window of the year. It also never expires, blocks the emergency fix
+# you actually need, and leaves no record of who froze what or why.
 #
 # What a customer freeze actually wants is narrower: do not put NEW VERSIONS into my
-# production between these dates. That is a question about which commits may merge, so it
-# is answered where merges are decided - in a required check, against a calendar in git.
-# Expiry is then structural rather than remembered: the window has an end date.
-#
-# Usage: freeze-gate [base-ref] [head-ref]   judge a change (default origin/main...HEAD)
-#        freeze-gate --calendar              what is frozen now, and what is coming
-#        freeze-gate --at <YYYY-MM-DD> ...   evaluate as of a date, for planning and tests
+# production between these dates. That is a question about which commits may merge, so it is
+# answered where merges are decided - in a required check, against a calendar in git. Expiry
+# is then structural rather than remembered: the window has an end date.
 #
 # Override: a `Freeze-override: <reason>` trailer on any commit in the range. Deliberately
 # possible and deliberately loud - a freeze nobody can override is one people bypass by
 # turning the check off, which is worse than an override with a reason attached to it.
+#
+# Usage:
+#   freeze-gate [base-ref] [head-ref]
+#   freeze-gate --calendar
+#   freeze-gate --at <YYYY-MM-DD> [base-ref] [head-ref]
+#
+# Arguments:
+#   base-ref, head-ref  the change to judge (default origin/main HEAD)
+#
+# Options:
+#   --calendar   what is frozen now, and what is coming
+#   --at <date>  evaluate as of a date, for planning and tests
+#   -h, --help   this text
+#
+# Environment:
+#   FREEZE_CALENDAR   the calendar file (default freezes.yaml)
+#   FREEZE_WARN_DAYS  days ahead a coming freeze is flagged (default 7)
+#
+# Examples:
+#   # the calendar
+#   ./scripts/freeze-gate --calendar
+#   # a PR against it
+#   ./scripts/freeze-gate origin/main HEAD
+#
+# See also: stage 27; declare-freeze (the skill); the Freeze-override: trailer
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 CAL="${FREEZE_CALENDAR:-freezes.yaml}"
 MODE="judge"; AT=""; BASE=""; HEAD_REF=""; WARN_DAYS="${FREEZE_WARN_DAYS:-7}"

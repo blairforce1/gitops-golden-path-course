@@ -1,27 +1,48 @@
 #!/usr/bin/env bash
+# How long from a break landing in git to the fleet view knowing, from metric samples.
+#
 # How long from "someone broke prod" to "the fleet view knew" - measured from artifacts.
 #
 # The answer is a metric sample timestamp: kube-state-metrics reads the stamp's Ready
 # condition into gotk_resource_info on the hub, so "when did we know" is a query, not a
-# stopwatch and not a memory. What it prints is the state timeline either side of the
-# break, which is the same thing your eyes do on the Grafana panel - one line per change.
+# stopwatch and not a memory. What it prints is the state timeline either side of the break,
+# which is the same thing your eyes do on the Grafana panel - one line per change.
 #
 # Deliberately NOT the commit status: a status is a snapshot one reconcile chose to post
-# (drill 2 met one that was green and said "dependency not ready"). The
-# metric is a continuous sample of the CR itself. Detection is a metric question;
-# attribution is a status question. This script answers the first.
+# (drill 2 met one that was green and said "dependency not ready"). The metric is a continuous
+# sample of the CR itself. Detection is a metric question; attribution is a status question.
+# This script answers the first.
 #
-# Usage: detect-time <stamp> <kube-context> [break-commit-subject | sha] [window]
-#   e.g. detect-time app-prod kind-ggp-prod-01              (a drill: the break is labelled)
-#        detect-time app-prod kind-ggp-prod-01 e99aba0      (an incident: the break is a sha)
+# The third argument is optional because the commit convention made the DRILL case derivable:
+# a deliberate break against this stamp has the subject prefix "break(<stamp>): ", so naming
+# the stamp already selects the commit. A real break is never labelled - it is a feat, a pin,
+# a promote that happened to hurt - and it is found the other way round: the stamp's
+# status.history names the revision that failed, and that sha is the anchor. Pass a sha and it
+# is used as given; pass a subject and it is matched as a prefix.
 #
-# The third argument is optional because the commit convention made the DRILL case
-# derivable: a deliberate break against this stamp has the subject prefix "break(<stamp>): ",
-# so naming the stamp already selects the commit. A real break is never labelled - it is a
-# feat, a pin, a promote that happened to hurt - and it is found the other way round: the
-# stamp's status.history names the revision that failed, and that sha is the anchor. Pass
-# a sha and it is used as given; pass a subject and it is matched as a prefix.
+# Usage:
+#   detect-time <stamp> <kube-context> [break-commit-subject | sha] [window]
+#
+# Arguments:
+#   stamp                       the Flux Kustomization, e.g. app-prod
+#   kube-context                the cluster it runs on, e.g. kind-ggp-prod-01
+#   break-commit-subject | sha  the break; default: the newest break(<stamp>): commit
+#   window                      how far back to read (default 1h)
+#
+# Options:
+#   -h, --help  this text
+#
+# Environment:
+#   DETECT_TIME_PORT     the local port for the hub port-forward (default 19097)
+#   DETECT_TIME_SUSTAIN  seconds a state must hold to count (default 60)
+#
+# Examples:
+#   # a drill: the break is labelled
+#   ./scripts/detect-time app-prod kind-ggp-prod-01
+#
+# See also: rule 5.8; stage 09; the Act III checkpoint drill 3
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 STAMP="${1:?usage: detect-time <stamp> <kube-context> [break-commit-subject | sha] [window]}"
 KCTX="${2:?kube context the stamp runs on, e.g. kind-ggp-prod-01}"

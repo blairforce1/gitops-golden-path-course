@@ -1,13 +1,31 @@
 #!/usr/bin/env bash
-# Act II drill runner: the fleet from nothing, unattended, and the number from artifacts.
-# DESTRUCTIVE - it deletes and rebuilds all three kind clusters. Guarded by --yes.
-# "Nothing" here is every kind cluster; what survives is git and the three root keys
-# under ~/.config/gitops-golden-path/age/. Drills 2 to 4 are PRs and queries: the
-# checkpoint runs them by hand and the promote, fleet-triage and audit-evidence skills
-# run them on request; this script is the rebuild they all start from.
-# Timings are extracted from artifacts (namespace creation stamps, the stamps' own
-# reconcile history) - no stopwatch, same rule as act-checkpoint.md.
+# Act II drill runner: the fleet from nothing, unattended, with the number from artifacts.
+#
+# DESTRUCTIVE - it deletes and rebuilds all three kind clusters. Guarded by --yes. "Nothing"
+# here is every kind cluster; what survives is git and the three root keys under
+# ~/.config/gitops-golden-path/age/. Drills 2 to 4 are PRs and queries: the checkpoint runs
+# them by hand and the promote, fleet-triage and audit-evidence skills run them on request;
+# this script is the rebuild they all start from. Timings are extracted from artifacts
+# (namespace creation stamps, the stamps' own reconcile history) - no stopwatch, same rule as
+# act-checkpoint.md.
+#
+# Usage:
+#   act-2-drill
+#   act-2-drill --yes
+#
+# Options:
+#   --yes       run it; bare, the script prints what it would destroy and exits 1
+#   -h, --help  this text
+#
+# Examples:
+#   # read the blast radius, nothing is touched
+#   ./scripts/act-2-drill
+#   # the run; the log is /tmp/act-2-drill.log
+#   ./scripts/act-2-drill --yes
+#
+# See also: the Act II checkpoint page; run-drill (the skill that runs this and writes the pack); checkpoint-07
 set -euo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 cd "$(dirname "$0")/.."
 

@@ -1,16 +1,37 @@
 #!/usr/bin/env bash
-# SLO gate: the promotion ladder's second signature. Convergence evidence (green
-# status contexts) says a rung is Ready; this says the rung MET ITS SLO over its
-# soak window. Refuses the next rung while the error budget is burning - and
-# refuses on NO TRAFFIC too: absence of evidence is not health.
-# Usage: slo-gate <cluster> [window]     e.g. slo-gate dev-01 30m
-# Clusters are the remote-writing spokes (dev-01, prod-01): the hub's own series carry
-# no cluster label, because externalLabels are applied on egress, not to local storage.
-# Tunables (env): SLO_TARGET (default: read from the SLO in git), SLO_P95_MAX (default 0.3s),
-#   SLO_MIN_SOAK (default 2m: how long the candidate must have been on the rung before
-#   the window's evidence counts as being ABOUT it - a production ladder sets the full
-#   window), SLO_STAMP (default app-<env> from the cluster name)
+# SLO gate: did the rung meet its SLO over the soak window? The promotion ladder's second signature.
+#
+# SLO gate: the promotion ladder's second signature. Convergence evidence (green status
+# contexts) says a rung is Ready; this says the rung MET ITS SLO over its soak window. Refuses
+# the next rung while the error budget is burning - and refuses on NO TRAFFIC too: absence of
+# evidence is not health. Clusters are the remote-writing spokes (dev-01, prod-01): the hub's
+# own series carry no cluster label, because externalLabels are applied on egress, not to
+# local storage.
+#
+# Usage:
+#   slo-gate <cluster> [window]
+#
+# Arguments:
+#   cluster  a remote-writing spoke: dev-01 or prod-01
+#   window   the evidence window (default 30m)
+#
+# Options:
+#   -h, --help  this text
+#
+# Environment:
+#   SLO_TARGET     availability target (default: read from the SLO rule in git)
+#   SLO_P95_MAX    p95 latency ceiling in seconds (default 0.3)
+#   SLO_MIN_SOAK   residency the candidate must have (default: soak.yaml's min, else 2m)
+#   SLO_STAMP      the stamp to judge (default app-<env>)
+#   SLO_GATE_PORT  the local port for the hub port-forward (default 19092)
+#
+# Examples:
+#   # before a promotion to prod
+#   ./scripts/slo-gate dev-01 10m
+#
+# See also: rule 5.7; stage 09; soak-gate; promote (the skill)
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 CLUSTER="${1:?usage: slo-gate <cluster> [window e.g. 30m]}"
 WINDOW="${2:-30m}"

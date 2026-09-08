@@ -1,12 +1,25 @@
 #!/usr/bin/env bash
-# The umbrella toolchain gate: "are my tools the pinned ones?" in one command.
-# Pure composition - runs every check-* script in this folder and aggregates.
-# Individual scripts remain first-class for event-driven use (flux bump ->
-# check-kustomize-flux-parity + check-helm-flux-parity; dev-rung upgrade ->
-# check-version-ladder). Cluster-state gates (checkpoint-NN) are deliberately
-# NOT included: "is my toolchain right" and "is my fleet green" are different
-# questions and deserve different exit codes.
+# The umbrella toolchain gate: are my tools the pinned ones, in one command.
+#
+# Pure composition - runs every check-* script in this folder and aggregates. Individual
+# scripts remain first-class for event-driven use (flux bump -> check-kustomize-flux-parity +
+# check-helm-flux-parity; dev-rung upgrade -> check-version-ladder). Cluster-state gates
+# (checkpoint-NN) are deliberately NOT included: "is my toolchain right" and "is my fleet
+# green" are different questions and deserve different exit codes.
+#
+# Usage:
+#   check
+#
+# Options:
+#   -h, --help  this text
+#
+# Examples:
+#   # every check-* script here, aggregated; exit 1 if any failed
+#   ./scripts/check
+#
+# See also: every check-* script; checkpoint-NN for cluster state, which this deliberately excludes
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 cd "$(dirname "$0")"
 overall=0; ran=0

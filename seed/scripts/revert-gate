@@ -1,15 +1,26 @@
 #!/usr/bin/env bash
-# Would this change drag credentials BACKWARDS, or undo something a revert cannot undo?
-# Two checks, because the two failure modes have different evidence:
-#   1. the DIFF carries secret material - old versions decay, and reverting the pointer
-#      may give you an address with nothing behind it. Reads paths only, never values.
-#   2. the change REVERTS a commit marked `!` - the author declared that reverting will
-#      not restore the previous state, and left a Roll-forward: recipe saying what to do
-#      instead (commit convention, rule 9).
-# Check 1 cannot be forgotten and is the authority. Check 2 is the author's knowledge on
-# top - it catches what a path scan cannot see, like a cluster that no longer exists.
-# Usage: revert-gate [base-ref] [head-ref]     defaults: origin/main...HEAD
+# Would this change drag credentials backwards, or undo a commit marked as not revertable?
+#
+# Two checks, because the two failure modes have different evidence: Check 1 cannot be
+# forgotten and is the authority. Check 2 is the author's knowledge on top - it catches what a
+# path scan cannot see, like a cluster that no longer exists.
+#
+# Usage:
+#   revert-gate [base-ref] [head-ref]
+#
+# Arguments:
+#   base-ref, head-ref  the change to judge (default origin/main HEAD)
+#
+# Options:
+#   -h, --help  this text
+#
+# Examples:
+#   # a revert branch
+#   ./scripts/revert-gate origin/main HEAD
+#
+# See also: rule 5.10; commit convention rule 9; stage 20
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 BASE="${1:-origin/main}"
 HEAD="${2:-HEAD}"

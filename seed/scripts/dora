@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# The four DORA metrics for a GitOps fleet - computed from artifacts, never self-reported.
+# The four DORA metrics for a GitOps fleet, computed from artifacts, scoped to production.
 #
-# DORA measures PRODUCTION. All four definitions say so: how often you release to
-# production, how long a commit takes to reach production, how often a production change
-# fails, how long production takes to recover. So production is the default scope here and
-# every other rung is a diagnostic, printed only on request and labelled as not-DORA -
-# because a dev deployment frequency in the same table is a number someone will quote.
+# DORA measures PRODUCTION. All four definitions say so: how often you release to production,
+# how long a commit takes to reach production, how often a production change fails, how long
+# production takes to recover. So production is the default scope here and every other rung is
+# a diagnostic, printed only on request and labelled as not-DORA - because a dev deployment
+# frequency in the same table is a number someone will quote.
 #
 # And the UNIT IS THE CHANGE, not the application of the change. One commit reaching fifty
 # tenants is one deployment, not fifty; a commit that breaks fifty tenants is one failed
@@ -13,35 +13,38 @@
 # count - add a customer and look more elite - which is the same class of error as counting
 # reconciles instead of changes, one level up.
 #
-# Two signals, because one of them lies. On the hub:
-#   gotk_resource_info{name,cluster,revision,ready}                      the STAMP
-#   kube_deployment_metadata_generation{cluster,namespace,deployment}    the WORKLOAD
-# A stamp reconciles every commit, so its revision changes on every push - including
-# pushes that changed nothing it renders. The workload's generation increments only when
-# the spec actually changed, so that is a deployment. Both are printed; the gap is the
-# lesson (stage 10).
-#
-#   deployment frequency  distinct changes reaching production, per day
-#   lead time             commit authored -> FIRST arrival on the production rung.
-#                         DORA lead time measures the FEEDBACK LOOP: how long before a
-#                         developer learns whether the change was any good. That signal
-#                         arrives with the first production tenant serving real traffic;
-#                         the fiftieth tells the developer nothing new, and waiting for it
-#                         mixes customer change-freeze calendars into a metric about
-#                         delivery capability.
-#   convergence           first production arrival -> last. A SEPARATE number, because
-#                         "when is everyone safe" is a real question and is not this one.
-#   change failure rate   failed changes / changes
-#   time to restore       per INCIDENT, ending when the last affected tenant recovered
+# Two signals, because one of them lies. On the hub: A stamp reconciles every commit, so its
+# revision changes on every push - including pushes that changed nothing it renders. The
+# workload's generation increments only when the spec actually changed, so that is a
+# deployment. Both are printed; the gap is the lesson (stage 10).
 #
 # Production is the LAST RUNG of the ladder, not a cluster name - --production selects it.
 #
-# Usage: dora [--window 30d] [--production <cluster-regex>] [--by tenant|cluster|stamp] [--rungs] [--stages]
-#   e.g. dora --window 30d                 the four numbers
-#        dora --window 30d --by tenant     which customer is dragging them
-#        dora --window 30d --rungs         the non-production rungs, as diagnostics
-#        dora --window 30d --stages        where the lead time actually goes (needs gh)
+# Usage:
+#   dora [--window 30d] [--production <cluster-regex>] [--by tenant|cluster|stamp] [--rungs] [--stages]
+#
+# Options:
+#   --window <d>               the period (default 30d)
+#   --production <regex>       which clusters count as production (default prod)
+#   --by tenant|cluster|stamp  the breakdown (default tenant)
+#   --rungs                    add the other rungs as diagnostics, labelled not-DORA
+#   --stages                   add the lead-time stages per change: soak, review, deploy
+#   -h, --help                 this text
+#
+# Environment:
+#   DORA_PORT     the local port for the hub port-forward (default 19098)
+#   DORA_STEP     query step in seconds (default 60)
+#   DORA_SUSTAIN  seconds a state must hold to count (default 90)
+#
+# Examples:
+#   # the four numbers over the checkpoint's window
+#   ./scripts/dora --window 6h
+#   # with the stages
+#   ./scripts/dora --window 30d --stages
+#
+# See also: rule 5.8; stage 10; decision 0022
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 WINDOW="30d"; PROD="prod-.*"; BY=""; RUNGS=0; STAGES=0
 while [ $# -gt 0 ]; do

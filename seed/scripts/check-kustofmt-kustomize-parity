@@ -1,17 +1,28 @@
 #!/usr/bin/env bash
-# The kustofmt<->kustomize parity gate: the house style is "what kustomize emits",
-# and that is only true while kustofmt links the kyaml the pinned kustomize ships.
-# kustofmt is released one build per kyaml (its compatibility.yaml maps every
-# kustomize release to the kustofmt built from the same library), so the pin is a
-# lookup, not a guess. kustofmt installs natively (a writer under -w and a hook on
-# every commit: the operator side of rule 4.2 wins), so this gate also hands out
-# the install, as the other check-* gates do. Two readings that must agree:
-#   the installed binary's own -version line -> the kyaml it links (local, no network)
-#   kustofmt's compatibility.yaml -> the kyaml the pinned kustomize release ships
-#     (each row re-derived by kustofmt's CI from upstream's go.mod at the tag)
-# The binary is asked rather than the table because a packaging-only release adds
+# Does the installed kustofmt link the kyaml the pinned kustomize ships?
+#
+# The kustofmt<->kustomize parity gate: the house style is "what kustomize emits", and that is
+# only true while kustofmt links the kyaml the pinned kustomize ships. kustofmt is released
+# one build per kyaml (its compatibility.yaml maps every kustomize release to the kustofmt
+# built from the same library), so the pin is a lookup, not a guess. kustofmt installs
+# natively (a writer under -w and a hook on every commit: the operator side of rule 4.2 wins),
+# so this gate also hands out the install, as the other check-* gates do. Two readings that
+# must agree: The binary is asked rather than the table because a packaging-only release adds
 # no row; the table is asked for kustomize because nothing installed can say it.
+#
+# Usage:
+#   check-kustofmt-kustomize-parity
+#
+# Options:
+#   -h, --help  this text
+#
+# Examples:
+#   # PASS/FAIL with the pinned install on FAIL
+#   ./scripts/check-kustofmt-kustomize-parity
+#
+# See also: rule 3.4; style-gate; clusters/versions.yaml
 set -uo pipefail
+case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;; esac
 
 cd "$(dirname "$0")/.."
 VERSIONS=clusters/versions.yaml

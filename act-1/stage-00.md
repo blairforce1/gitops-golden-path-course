@@ -28,6 +28,7 @@ chmod +x scripts/*         # belt and braces: a zip download loses the execute b
 git add -A
 git commit -m "chore(scripts): seed the gates, checkpoints, drills, skills, decisions and templates from the course"
 git push -u origin main
+./scripts/help   # what you were just given, one line each; <name> --help prints any script's header
 ```
 
 Then the day-zero configuration. Every `gh api` call in this stage names the repo as `{owner}/{repo}`, placeholders gh fills from the repository you are standing in; from the wrong directory, the merge policy and the ruleset below land on your course clone instead. One line settles where you are:
