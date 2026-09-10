@@ -20,7 +20,7 @@ A promotion is one pin moved by one PR, on evidence. This skill gathers the evid
 
 ```sh
 kubectl --context <lower-ctx> -n flux-system get kustomization <stamp> -o jsonpath='{.status.lastAppliedRevision}{"\n"}'
-./scripts/release-notes <stamp> <target-ctx> <lower-stamp>@<lower-ctx> --first-parent    # what the lower rung has that the target has not
+./scripts/release-notes <stamp> <target-ctx> --gap <lower-stamp>@<lower-ctx> --first-parent    # what the target will get from the lower rung
 ```
 
 Stop if the lower rung's pin equals the target's: there is nothing to promote, say so.

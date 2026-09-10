@@ -10,15 +10,19 @@
 # Two views, and the difference is why merge-commit-only matters:
 #
 # Usage:
-#   release-notes <stamp> <kube-context> [since] [--first-parent] [--record]
+#   release-notes <stamp> <kube-context> [since] [--gap <stamp>@<kube-context>] [--first-parent] [--record]
 #
 # Arguments:
 #   stamp, kube-context  the stamp and the cluster it runs on
-#   since                a git revision, or <stamp>@<kube-context> to diff two rungs
+#   since                a git revision to report from (default: the recorded point, else the root)
 #
 # Options:
+#   --gap <stamp>@<kube-context>  the promotion gap: from what THIS stamp runs to what that one
+#                                 runs, filtered to this stamp's inputs, because the question is
+#                                 what this rung will render after the promotion. Not with since
+#                                 or --record
 #   --first-parent  one line per PR: what shipped, as reviewed
-#   --record        write the notes as a file under docs/ for a PR
+#   --record        remember this run's revision in .release-notes/, so the next run reports since it
 #   -h, --help      this text
 #
 # Environment:
@@ -27,8 +31,8 @@
 # Examples:
 #   # what prod is running, as reviewed
 #   ./scripts/release-notes app-prod kind-ggp-prod-01 --first-parent
-#   # the promotion gap
-#   ./scripts/release-notes app-prod kind-ggp-prod-01 app-dev@kind-ggp-dev-01 --first-parent
+#   # the promotion gap: what prod will get from dev
+#   ./scripts/release-notes app-prod kind-ggp-prod-01 --gap app-dev@kind-ggp-dev-01 --first-parent
 #
 # See also: stage 26; promote (the skill reads the gap this way)
 set -uo pipefail
@@ -36,18 +40,24 @@ case "${1-}" in -h|--help) sed -n '2,/^\([^#]\|$\)/p' "$0" | sed '$d;s/^# \{0,1\
 
 CLIFF="${CLIFF_IMAGE:-docker.io/orhunp/git-cliff:2.13.1}"
 
-STAMP="${1:?usage: release-notes <stamp> <kube-context> [since] [--first-parent] [--record]}"
+STAMP="${1:?usage: release-notes <stamp> <kube-context> [since] [--gap <stamp>@<kube-context>] [--first-parent] [--record]}"
 KCTX="${2:?kube context the stamp runs on, e.g. kind-ggp-prod-01}"
 shift 2
-SINCE=''; FP=''; RECORD=''
-for a in "$@"; do
-  case "$a" in
+SINCE=''; GAP=''; FP=''; RECORD=''
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --gap)          GAP="${2:?--gap needs <stamp>@<kube-context>}"; shift ;;
     --first-parent) FP='--first-parent' ;;
     --record)       RECORD=1 ;;
-    -*)             echo "FAIL  unknown flag $a"; exit 2 ;;
-    *)              SINCE="$a" ;;
+    -*)             echo "FAIL  unknown flag $1"; exit 2 ;;
+    *)              SINCE="$1" ;;
   esac
+  shift
 done
+case "$SINCE" in *@*) echo "FAIL  '$SINCE' looks like a rung; the promotion gap is --gap $SINCE"; exit 2 ;; esac
+[ -n "$GAP" ] && [ -n "$SINCE" ] && { echo "FAIL  --gap and since are two different ranges; give one"; exit 2; }
+[ -n "$GAP" ] && [ -n "$RECORD" ] && { echo "FAIL  --record needs this cluster's own range, not a gap  [drop --gap or --record]"; exit 2; }
+case "$GAP" in ?*@?*|'') ;; *) echo "FAIL  --gap wants <stamp>@<kube-context>, got '$GAP'"; exit 2 ;; esac
 
 # What the cluster says it is running. Flux writes "<branch>@sha1:<full-sha>"; take the sha.
 revision_of() {
@@ -55,19 +65,32 @@ revision_of() {
     -o jsonpath='{.status.lastAppliedRevision}' 2>/dev/null | sed 's/.*sha1://'
 }
 
-TO=$(revision_of "$STAMP" "$KCTX")
-[ -n "$TO" ] || { echo "FAIL  $STAMP on $KCTX reports no lastAppliedRevision  [stamp exists? ever reconciled?]"; exit 1; }
-git cat-file -e "$TO^{commit}" 2>/dev/null \
-  || { echo "FAIL  $KCTX is running $TO, which is not in this clone  [git fetch? history rewritten?]"; exit 1; }
+RUNNING=$(revision_of "$STAMP" "$KCTX")
+[ -n "$RUNNING" ] || { echo "FAIL  $STAMP on $KCTX reports no lastAppliedRevision  [stamp exists? ever reconciled?]"; exit 1; }
+git cat-file -e "$RUNNING^{commit}" 2>/dev/null \
+  || { echo "FAIL  $KCTX is running $RUNNING, which is not in this clone  [git fetch? history rewritten?]"; exit 1; }
 
+# The range. Plain: from a point in this cluster's past up to what it runs now. --gap: from
+# what THIS cluster runs up to what the other rung runs - the direction matters, because
+# git's A..B is "reachable from B, not from A", and prod's commit is an ancestor of dev's on
+# a ladder. dev..prod is empty; prod..dev is the promotion gap.
 STATE=".release-notes/${KCTX}.${STAMP}"
-case "$SINCE" in
-  '')      FROM=$( [ -f "$STATE" ] && cat "$STATE" || git rev-list --max-parents=0 HEAD | tail -1 ) ;;
-  *@*)     FROM=$(revision_of "${SINCE%@*}" "${SINCE#*@}")
-           [ -n "$FROM" ] || { echo "FAIL  $SINCE reports no lastAppliedRevision"; exit 1; } ;;
-  *)       FROM=$(git rev-parse "$SINCE^{commit}" 2>/dev/null) \
-             || { echo "FAIL  '$SINCE' is not a revision in this repo"; exit 1; } ;;
-esac
+if [ -n "$GAP" ]; then
+  FROM="$RUNNING"
+  TO=$(revision_of "${GAP%@*}" "${GAP#*@}")
+  [ -n "$TO" ] || { echo "FAIL  $GAP reports no lastAppliedRevision  [stamp exists on that cluster? ever reconciled?]"; exit 1; }
+  git cat-file -e "$TO^{commit}" 2>/dev/null \
+    || { echo "FAIL  ${GAP#*@} is running $TO, which is not in this clone  [git fetch? history rewritten?]"; exit 1; }
+else
+  TO="$RUNNING"
+  case "$SINCE" in
+    '')  FROM=$( [ -f "$STATE" ] && cat "$STATE" || git rev-list --max-parents=0 HEAD | tail -1 ) ;;
+    *)   FROM=$(git rev-parse "$SINCE^{commit}" 2>/dev/null) \
+           || { echo "FAIL  '$SINCE' is not a revision in this repo"; exit 1; } ;;
+  esac
+fi
+git merge-base --is-ancestor "$FROM" "$TO" 2>/dev/null \
+  || { echo "FAIL  ${FROM:0:7} is not an ancestor of ${TO:0:7}  [the two points have diverged; git log --oneline ${FROM:0:7}...${TO:0:7}]"; exit 1; }
 
 # Which paths render to THIS cluster. The stamp knows its own: spec.path. Everything that
 # path *includes* reaches it too, which is why base and components are in the set - a base
@@ -81,13 +104,17 @@ PATHS=("$SPEC_PATH" apps/base apps/components)
 
 printf 'cluster        %s\n' "$KCTX"
 printf 'stamp          %s   (renders %s)\n' "$STAMP" "${SPEC_PATH:-<unknown>}"
-printf 'running        %s   %s\n' "${TO:0:7}" "$(git log -1 --format=%cI "$TO")"
-printf 'since          %s   %s\n' "${FROM:0:7}" "$(git log -1 --format=%cI "$FROM")"
+printf 'running        %s   %s\n' "${RUNNING:0:7}" "$(git log -1 --format=%cI "$RUNNING")"
+if [ -n "$GAP" ]; then
+  printf 'gap to         %s   %s   (%s on %s)\n' "${TO:0:7}" "$(git log -1 --format=%cI "$TO")" "${GAP%@*}" "${GAP#*@}"
+else
+  printf 'since          %s   %s\n' "${FROM:0:7}" "$(git log -1 --format=%cI "$FROM")"
+fi
 printf 'view           %s\n' "$([ -n "$FP" ] && echo 'per PR (--first-parent)' || echo 'per commit')"
 echo
 
 if [ "$FROM" = "$TO" ]; then
-  echo "nothing to report - this cluster is already at the reference revision"
+  echo "nothing to report - the two points are the same revision"
   exit 0
 fi
 

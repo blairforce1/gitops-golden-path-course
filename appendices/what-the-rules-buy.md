@@ -223,7 +223,7 @@ Beyond git and GitHub, the Part 3 and Part 4 rules and the measurement scripts l
 |---|---|---|
 | kustomize's emitter: alphabetical, indentless sequences, block style | 3.3, 3.4, 3.5 | ordering and style are free for every tool-written file; `kustomize build` was always a formatter for resources, and kustofmt is the same emitter for every other file |
 | `flux create <kind> --export` | 3.5 | stamps, Alerts, Providers and sources authored by the tool, and the flags are the day-2 vocabulary |
-| `lastAppliedRevision` (`main@sha1:<sha>`) | 2.3, stage 26 | the release-notes range is the cluster's own statement, so there is no tag ceremony and no changelog to keep honest; `app-dev@<context>` as the "since" is the promotion gap |
+| `lastAppliedRevision` (`main@sha1:<sha>`) | 2.3, stage 26 | the release-notes range is the cluster's own statement, so there is no tag ceremony and no changelog to keep honest; `--gap app-dev@<context>` is the promotion gap, from what this rung runs to what dev runs, filtered to this rung's inputs |
 | `commitStatusExpr` (a CEL expression on the Provider) | 3.6 | the status suffix is declared per cluster instead of the Provider's UID, so the status thread survives a Provider recreation |
 | `gotk_resource_info{revision,ready}` and `kube_deployment_metadata_generation` on the hub | 5.7, 5.8 | the four DORA numbers and `detect-time` are metric samples, and the two series together separate a reconcile from a change |
 | sops encrypts values only (`encrypted_regex`) | 3.1, 5.10, stage 12 | `kind` and `metadata.name` stay readable, so `layout-gate` judges an encrypted file and `kustomize build` renders ciphertext, which puts a secret change in the blast radius with no key near a runner |

@@ -1372,15 +1372,19 @@ release branches, no changelog file to keep honest.
 Two views, and the difference is why merge-commit-only matters:
 
 Usage:
-  release-notes <stamp> <kube-context> [since] [--first-parent] [--record]
+  release-notes <stamp> <kube-context> [since] [--gap <stamp>@<kube-context>] [--first-parent] [--record]
 
 Arguments:
   stamp, kube-context  the stamp and the cluster it runs on
-  since                a git revision, or <stamp>@<kube-context> to diff two rungs
+  since                a git revision to report from (default: the recorded point, else the root)
 
 Options:
+  --gap <stamp>@<kube-context>  the promotion gap: from what THIS stamp runs to what that one
+                                runs, filtered to this stamp's inputs, because the question is
+                                what this rung will render after the promotion. Not with since
+                                or --record
   --first-parent  one line per PR: what shipped, as reviewed
-  --record        write the notes as a file under docs/ for a PR
+  --record        remember this run's revision in .release-notes/, so the next run reports since it
   -h, --help      this text
 
 Environment:
@@ -1389,8 +1393,8 @@ Environment:
 Examples:
   # what prod is running, as reviewed
   ./scripts/release-notes app-prod kind-ggp-prod-01 --first-parent
-  # the promotion gap
-  ./scripts/release-notes app-prod kind-ggp-prod-01 app-dev@kind-ggp-dev-01 --first-parent
+  # the promotion gap: what prod will get from dev
+  ./scripts/release-notes app-prod kind-ggp-prod-01 --gap app-dev@kind-ggp-dev-01 --first-parent
 
 See also: stage 26; promote (the skill reads the gap this way)
 ```
